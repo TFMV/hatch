@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 
-	"github.com/apache/arrow/go/v17/arrow/flight"
-	"github.com/apache/arrow/go/v17/arrow/flight/flightsql"
+	"github.com/apache/arrow/go/v17/arrow/flight/gen/flight"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -18,57 +18,42 @@ const (
 	port            = ":8080"
 )
 
+// FlightSQLServer implements the FlightServiceServer interface.
 type FlightSQLServer struct {
-	flightsql.BaseServer
+	flight.UnimplementedFlightServiceServer
 	db *pgxpool.Pool
 }
 
+// NewFlightSQLServer initializes a new FlightSQLServer.
 func NewFlightSQLServer(db *pgxpool.Pool) *FlightSQLServer {
 	return &FlightSQLServer{db: db}
 }
 
-func (s *FlightSQLServer) GetSQLInfo(ctx context.Context, req *flightsql.GetSQLInfoRequest) (*flightsql.GetSQLInfoResponse, error) {
-	// Implement your SQL Info handling logic here
-	return &flightsql.GetSQLInfoResponse{}, nil
+// GetFlightInfo handles the FlightInfo request.
+func (s *FlightSQLServer) GetFlightInfo(ctx context.Context, req *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	// Implement your Flight Info handling logic here
+	return &flight.FlightInfo{}, nil
 }
 
-func (s *FlightSQLServer) DoGet(req *flight.Ticket, server flightsql.FlightService_DoGetServer) error {
-	query := string(req.Ticket)
-	rows, err := s.db.Query(context.Background(), query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	// Implement logic to convert pgx rows to Arrow RecordBatches and send via server.Send
-	// Example placeholder logic
-	for rows.Next() {
-		// Here you would convert the rows to an Arrow RecordBatch and send it
-		// This is a simplified example and does not include the actual conversion
-	}
-
+// DoGet handles the DoGet request.
+func (s *FlightSQLServer) DoGet(req *flight.Ticket, stream flight.FlightService_DoGetServer) error {
+	// Implement the logic to handle DoGet requests here
 	return nil
 }
 
-func (s *FlightSQLServer) DoAction(ctx context.Context, req *flight.ActionRequest) (*flight.ActionResponse, error) {
-	// Implement your DoAction logic here
-	return &flight.ActionResponse{}, nil
-}
-
 func main() {
-	config, err := pgxpool.ParseConfig(postgresConnStr)
+	config, err := pgxpool.ParseConfig(context.Background(), postgresConnStr)
 	if err != nil {
 		log.Fatalf("failed to parse config: %v", err)
 	}
 
 	db, err := pgxpool.New(context.Background(), config)
-
 	if err != nil {
 		log.Fatalf("failed to connect to postgres: %v", err)
 	}
 	defer db.Close()
 
-	server := grpc.NewServer(grpc.Creds(insecure.NewCredentials()))
+	server := grpc.NewServer()
 	flight.RegisterFlightServiceServer(server, NewFlightSQLServer(db))
 
 	lis, err := net.Listen("tcp", port)
@@ -76,6 +61,16 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	fmt.Printf("Arrow Flight SQL server listening on %s\n", port)
+
+	// Set up signal handling for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, os.Kill)
+	go func() {
+		<-sigCh
+		fmt.Println("\nShutting down server...")
+		server.GracefulStop()
+	}()
+
 	if err := server.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}
