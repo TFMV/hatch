@@ -1,48 +1,79 @@
-# Flight
+# DuckDB Flight Server
 
-A Go Implementation of Apache Arrow Flight SQL
+This package implements an Apache Arrow Flight SQL server for DuckDB, enabling high-performance, columnar-based remote database access using the Arrow Flight protocol. The implementation provides efficient data exchange with DuckDB, making it ideal for analytical workloads and distributed query execution.
 
-![Apache Arrow Flight Logo](flight.webp)
+## Features
 
-## Under Construction (does not work)
+- Full Flight SQL protocol implementation: Supports Flight SQL operations for queries, updates, and metadata retrieval.
+- Transaction management: Provides support for transactional operations using Flight SQL.
+- Prepared statements: Enables pre-compiling SQL queries for efficient execution.
+- Schema and metadata retrieval: Supports fetching database schema, table information, and column types.
+- Type system compatibility: Maps DuckDB types to Apache Arrow types for seamless integration.
+- Primary and foreign key support: Retrieves primary and foreign key metadata via Flight SQL.
 
-## Overview
+## Installation
 
-Flight is a Go implementation of the Apache Arrow Flight SQL protocol. This solution leverages the capabilities of Apache Arrow and gRPC to provide high-performance, scalable data transport. It is designed to facilitate efficient data interchange and manipulation for analytics, machine learning, and other data-intensive applications.
+```bash
+go get github.com/TFMV/flight
+```
 
-## Key Technologies
+## Quick Start
 
-### Apache Arrow
+```go
+package main
 
-[Apache Arrow](https://arrow.apache.org/) is a cross-language development platform for in-memory data. It specifies a standardized language-independent columnar memory format for flat and hierarchical data, organized for efficient analytic operations on modern hardware like CPUs and GPUs. Arrow enables zero-copy reads for lightning-fast data access without serialization overhead.
+import (
+ "context"
+ "log"
+ "net"
+ "github.com/apache/arrow-go/v18/arrow/flight"
+ "github.com/TFMV/flight"
+)
 
-#### Key Features
+func main() {
+ server, err := duckdb_flight.NewDuckDBFlightSQLServer()
+ if err != nil {
+  log.Fatalf("Failed to initialize server: %v", err)
+ }
 
-- **Columnar Format**: Optimized for analytical processing.
-- **Interoperability**: Supports multiple programming languages including Go, Python, Java, C++, and more.
-- **Efficient**: Enables zero-copy reads to avoid serialization overhead.
-- **High Performance**: Designed for modern CPUs and GPUs to accelerate data processing tasks.
+ listener, err := net.Listen("tcp", ":8815")
+ if err != nil {
+  log.Fatalf("Failed to listen on port: %v", err)
+ }
 
-### Apache Arrow Flight
+ log.Println("DuckDB Flight SQL server running on port 8815")
+ server.Serve(listener)
+}
+```
 
-[Apache Arrow Flight](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/) is a framework for high-performance data services based on Arrow. It is designed for efficient data transport, leveraging the Arrow in-memory format for seamless data interchange between systems.
+## Components
 
-### gRPC
+The implementation consists of several key files:
 
-[gRPC](https://grpc.io/) is a high-performance, open-source RPC framework developed by Google. It uses HTTP/2 for transport, Protocol Buffers for serialization, and provides features like authentication, load balancing, and more.
+- `duckdb_flight_server.go`: Main server implementation
+- `duckdb_batch_reader.go`: Record batch reader for query results
+- `duckdb_schema_batch_reader.go`: Schema metadata reader
+- `duckdb_type_info.go`: DuckDB type system information
+- `duckdb_info.go`: Server information and capabilities
 
-## Implementation Details
+## Type System Mapping
 
-### Flight Server
+The implementation maps DuckDB types to Arrow types, ensuring compatibility with Arrow-based clients. Supported types include:
 
-The Flight server is implemented using gRPC and Arrow Flight. It acts as a data service, handling incoming requests for data operations such as SQL query execution and data retrieval.
+| DuckDB Type | Arrow Type |
+|-------------|------------|
+| TINYINT     | INT8      |
+| SMALLINT    | INT16     |
+| INTEGER     | INT32     |
+| BIGINT      | INT64     |
+| FLOAT       | FLOAT32   |
+| DOUBLE      | FLOAT64   |
+| VARCHAR     | STRING    |
+| BLOB        | BINARY    |
+| DATE        | DATE32    |
+| TIME        | TIME32    |
+| TIMESTAMP   | TIMESTAMP |
 
-#### Key Components
+## License
 
-- **gRPC Server**: The core of the server, handling incoming RPC calls.
-- **Flight Service**: Implements the Flight service interface, managing data operations.
-- **SQL Execution**: Integrates with PostgreSQL to execute SQL queries and return results in Arrow format.
-
-### Flight Client
-
-The Flight client interacts with the Flight server to perform data operations. It uses gRPC to communicate with the server and Arrow Flight to handle data interchange.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
