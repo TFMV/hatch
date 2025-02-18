@@ -20,7 +20,7 @@ import (
 func getArrowTypeFromString(dbtype string) arrow.DataType {
 	dbtype = strings.ToLower(dbtype)
 	if dbtype == "" {
-		// SQLite may not know the type yet.
+		// DuckDB may not know the type yet.
 		return &arrow.NullType{}
 	}
 	if strings.HasPrefix(dbtype, "varchar") {
@@ -30,24 +30,34 @@ func getArrowTypeFromString(dbtype string) arrow.DataType {
 	switch dbtype {
 	case "tinyint":
 		return arrow.PrimitiveTypes.Int8
-	case "mediumint":
+	case "smallint":
+		return arrow.PrimitiveTypes.Int16
+	case "integer", "int", "int32":
 		return arrow.PrimitiveTypes.Int32
-	case "int", "integer":
+	case "bigint", "int64":
 		return arrow.PrimitiveTypes.Int64
 	case "float":
 		return arrow.PrimitiveTypes.Float32
-	case "real", "double":
+	case "double":
 		return arrow.PrimitiveTypes.Float64
 	case "blob":
 		return arrow.BinaryTypes.Binary
-	case "text", "date", "char", "clob":
+	case "text", "varchar", "string":
 		return arrow.BinaryTypes.String
+	case "date":
+		return arrow.FixedWidthTypes.Date32
+	case "time":
+		return arrow.FixedWidthTypes.Time32s
+	case "timestamp":
+		return arrow.FixedWidthTypes.Timestamp_us
+	case "boolean":
+		return arrow.FixedWidthTypes.Boolean
 	default:
-		panic("invalid sqlite type: " + dbtype)
+		panic("invalid DuckDB type: " + dbtype)
 	}
 }
 
-var sqliteDenseUnion = arrow.DenseUnionOf([]arrow.Field{
+var duckDBDenseUnion = arrow.DenseUnionOf([]arrow.Field{
 	{Name: "int", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 	{Name: "float", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
 	{Name: "string", Type: arrow.BinaryTypes.String, Nullable: true},
@@ -57,11 +67,13 @@ func getArrowType(c *sql.ColumnType) arrow.DataType {
 	dbtype := strings.ToLower(c.DatabaseTypeName())
 	if dbtype == "" {
 		if c.ScanType() == nil {
-			return sqliteDenseUnion
+			return duckDBDenseUnion
 		}
 		switch c.ScanType().Kind() {
 		case reflect.Int8, reflect.Uint8:
 			return arrow.PrimitiveTypes.Int8
+		case reflect.Int16, reflect.Uint16:
+			return arrow.PrimitiveTypes.Int16
 		case reflect.Int32, reflect.Uint32:
 			return arrow.PrimitiveTypes.Int32
 		case reflect.Int, reflect.Int64, reflect.Uint64:
@@ -72,6 +84,8 @@ func getArrowType(c *sql.ColumnType) arrow.DataType {
 			return arrow.PrimitiveTypes.Float64
 		case reflect.String:
 			return arrow.BinaryTypes.String
+		case reflect.Bool:
+			return arrow.FixedWidthTypes.Boolean
 		}
 	}
 	return getArrowTypeFromString(dbtype)
