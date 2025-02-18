@@ -23,26 +23,25 @@ go get github.com/TFMV/flight
 package main
 
 import (
- "context"
- "log"
- "net"
- "github.com/apache/arrow-go/v18/arrow/flight"
- "github.com/TFMV/flight"
+     "context"
+      "log"
+      "net "
+      "github.com/apache/arrow-go/v18/arrow/flight"
+      duckdb_flight "github.com/TFMV/flight"
 )
 
 func main() {
- server, err := duckdb_flight.NewDuckDBFlightSQLServer()
- if err != nil {
-  log.Fatalf("Failed to initialize server: %v", err)
- }
+    server, err := duckdb_flight.NewDuckDBFlightSQLServer()
+    if err != nil {
+        log.Fatalf("Failed to initialize server: %v", err)
+    }
 
- listener, err := net.Listen("tcp", ":8815")
- if err != nil {
-  log.Fatalf("Failed to listen on port: %v", err)
- }
-
- log.Println("DuckDB Flight SQL server running on port 8815")
- server.Serve(listener)
+    listener, err := net.Listen("tcp", ":8815")
+    if err != nil {
+        log.Fatalf("Failed to listen on port: %v", err)
+    }
+    log.Println("DuckDB Flight SQL server running on port 8815")
+    server.Serve(listener)
 }
 ```
 
