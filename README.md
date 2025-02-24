@@ -2,6 +2,65 @@
 
 This package implements an Apache Arrow Flight SQL server for DuckDB, enabling high-performance, columnar-based remote database access using the Arrow Flight protocol. The implementation provides efficient data exchange with DuckDB, making it ideal for analytical workloads and distributed query execution.
 
+## 🏗 Architecture
+
+```mermaid
+graph TB
+    subgraph "Flight SQL Server"
+        DFS[DuckDBFlightSQLServer]
+        DBW[DuckDBBatchWriter]
+        DBR[DuckDBBatchReader]
+        DSR[DuckDBTablesSchemaBatchReader]
+        
+        DFS --> DBW
+        DFS --> DBR
+        DFS --> DSR
+    end
+
+    subgraph "Client Layer"
+        FC[Flight SQL Client]
+        DC[DuckDBClient]
+        FC --> DC
+    end
+
+    subgraph "Core Components"
+        DB[(DuckDB)]
+        TI[TypeInfo]
+        SI[SQLInfo]
+        
+        DFS --> DB
+        DFS --> TI
+        DFS --> SI
+    end
+
+    subgraph "Flight SQL Operations"
+        direction LR
+        Q[Queries]
+        U[Updates]
+        T[Transactions]
+        M[Metadata]
+        P[Prepared Statements]
+        
+        DFS --> Q
+        DFS --> U
+        DFS --> T
+        DFS --> M
+        DFS --> P
+    end
+
+    subgraph "Data Flow"
+        AR[Arrow Records]
+        AS[Arrow Schema]
+        
+        DBR --> AR
+        DSR --> AS
+        DBW --> DB
+    end
+
+    Client[External Client] --> FC
+    FC --> DFS
+```
+
 ## Features
 
 - Full Flight SQL protocol implementation: Supports Flight SQL operations for queries, updates, and metadata retrieval.

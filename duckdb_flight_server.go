@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"math/rand"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql/schema_ref"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/scalar"
 	"google.golang.org/grpc"
@@ -21,6 +23,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	flight_gen "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 	_ "github.com/marcboeker/go-duckdb"
 )
 
@@ -184,6 +187,8 @@ type DuckDBFlightSQLServer struct {
 
 	prepared         sync.Map
 	openTransactions sync.Map
+	tableCreated     bool
+	schema           *arrow.Schema
 }
 
 func NewDuckDBFlightSQLServer(db *sql.DB) (*DuckDBFlightSQLServer, error) {
@@ -206,9 +211,8 @@ func (s *DuckDBFlightSQLServer) flightInfoForCommand(desc *flight.FlightDescript
 }
 
 func (s *DuckDBFlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	// Create the ticket using the query directly
 	ticket := &flight.Ticket{
-		Ticket: []byte(cmd.GetQuery()),
+		Ticket: []byte(fmt.Sprintf("query:%s", cmd.GetQuery())),
 	}
 
 	return &flight.FlightInfo{
@@ -222,13 +226,11 @@ func (s *DuckDBFlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd 
 }
 
 func (s *DuckDBFlightSQLServer) DoGetStatement(ctx context.Context, cmd flightsql.StatementQueryTicket) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	// Get the statement handle from the ticket
-	handle := cmd.GetStatementHandle()
-
-	// In this example, the handle is the query
-	query := string(handle)
-
-	// Execute the query
+	handle := string(cmd.GetStatementHandle())
+	if !strings.HasPrefix(handle, "query:") {
+		return nil, nil, status.Error(codes.InvalidArgument, "invalid ticket format")
+	}
+	query := strings.TrimPrefix(handle, "query:")
 	return doGetQuery(ctx, s.Alloc, s.db, query, nil)
 }
 
@@ -734,7 +736,7 @@ func (s *DuckDBFlightSQLServer) DoGetCrossReference(ctx context.Context, cmd fli
 	return doGetQuery(ctx, s.Alloc, s.db, query, schema_ref.ExportedKeys)
 }
 
-func (s *DuckDBFlightSQLServer) BeginTransaction(_ context.Context, req flightsql.ActionBeginTransactionRequest) (id []byte, err error) {
+func (s *DuckDBFlightSQLServer) BeginTransaction(ctx context.Context, req flightsql.ActionBeginTransactionRequest) ([]byte, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to begin transaction: %s", err.Error())
@@ -767,4 +769,158 @@ func (s *DuckDBFlightSQLServer) EndTransaction(_ context.Context, req flightsql.
 	}
 
 	return status.Error(codes.InvalidArgument, "transaction id not found")
+}
+
+// DoExchange handles exchanging Arrow data between Flight SQL servers
+func (s *DuckDBFlightSQLServer) DoExchange(stream flight_gen.FlightService_DoExchangeServer) error {
+	for {
+		data, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return status.Errorf(codes.Internal, "error reading stream: %v", err)
+		}
+
+		// The first message contains the schema.
+		if !s.tableCreated {
+			schema, err := flight.DeserializeSchema(data.DataHeader, s.Alloc)
+			if err != nil {
+				return status.Errorf(codes.Internal, "failed to deserialize schema: %v", err)
+			}
+			createStmt := generateCreateTableStmt(schema)
+			if _, err := s.db.ExecContext(context.Background(), createStmt); err != nil {
+				return status.Errorf(codes.Internal, "failed to create table: %v", err)
+			}
+			s.tableCreated = true
+			s.schema = schema
+			continue
+		}
+
+		// Subsequent messages contain record batches.
+		messageReader, err := ipc.NewReader(bytes.NewReader(data.DataBody), ipc.WithSchema(s.schema), ipc.WithAllocator(s.Alloc))
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to create message reader: %v", err)
+		}
+
+		// Process each record batch in the message.
+		for messageReader.Next() {
+			record := messageReader.Record()
+			if record == nil || record.NumRows() == 0 {
+				continue
+			}
+
+			// Generate the INSERT statement with parameter placeholders.
+			insertStmtStr := generateInsertStmt(record)
+			stmt, err := s.db.PrepareContext(context.Background(), insertStmtStr)
+			if err != nil {
+				messageReader.Release()
+				return status.Errorf(codes.Internal, "failed to prepare insert statement: %v", err)
+			}
+
+			// Loop through each row in the record.
+			for row := 0; row < int(record.NumRows()); row++ {
+				params := make([]interface{}, record.NumCols())
+				// Extract values for each column.
+				for col := 0; col < int(record.NumCols()); col++ {
+					colArray := record.Column(col)
+					sc, err := scalar.GetScalar(colArray, row)
+					if err != nil {
+						stmt.Close()
+						messageReader.Release()
+						return status.Errorf(codes.Internal, "failed to get scalar for row %d, col %d: %v", row, col, err)
+					}
+
+					value, err := scalarToIFace(sc)
+					if err != nil {
+						if r, ok := sc.(scalar.Releasable); ok {
+							r.Release()
+						}
+						stmt.Close()
+						messageReader.Release()
+						return status.Errorf(codes.Internal, "failed to convert scalar to interface for row %d, col %d: %v", row, col, err)
+					}
+					params[col] = value
+					if r, ok := sc.(scalar.Releasable); ok {
+						r.Release()
+					}
+				}
+
+				// Execute the insert with the bound parameters.
+				if _, err := stmt.ExecContext(context.Background(), params...); err != nil {
+					stmt.Close()
+					messageReader.Release()
+					return status.Errorf(codes.Internal, "failed to execute insert for row %d: %v", row, err)
+				}
+			}
+			stmt.Close()
+		}
+
+		// Check for any errors during reading.
+		if err := messageReader.Err(); err != nil {
+			messageReader.Release()
+			return status.Errorf(codes.Internal, "error reading record batch: %v", err)
+		}
+		messageReader.Release()
+
+		// Optionally, send a response back (e.g. echoing the received data).
+		if err := stream.Send(data); err != nil {
+			return status.Errorf(codes.Internal, "failed to write response: %v", err)
+		}
+	}
+	return nil
+}
+
+func generateCreateTableStmt(schema *arrow.Schema) string {
+	var b strings.Builder
+	b.WriteString("CREATE TABLE exchange_data (")
+	for i, field := range schema.Fields() {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(field.Name)
+		b.WriteString(" ")
+		b.WriteString(arrowTypeToDuckDB(field.Type))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+func arrowTypeToDuckDB(t arrow.DataType) string {
+	switch t.ID() {
+	case arrow.INT8:
+		return "TINYINT"
+	case arrow.INT32:
+		return "INTEGER"
+	case arrow.INT64:
+		return "BIGINT"
+	case arrow.FLOAT32:
+		return "FLOAT"
+	case arrow.FLOAT64:
+		return "DOUBLE"
+	case arrow.STRING:
+		return "VARCHAR"
+	default:
+		return "VARCHAR" // fallback
+	}
+}
+
+func generateInsertStmt(record arrow.Record) string {
+	var b strings.Builder
+	b.WriteString("INSERT INTO exchange_data (")
+	for i, field := range record.Schema().Fields() {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(field.Name)
+	}
+	b.WriteString(") VALUES (")
+	for i := 0; i < int(record.NumCols()); i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("?")
+	}
+	b.WriteString(")")
+	return b.String()
 }
