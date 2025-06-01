@@ -1,0 +1,27 @@
+obsolete/duckdb_flight_server.go:198:22: Error return value of `ret.RegisterSqlInfo` is not checked (errcheck)
+		ret.RegisterSqlInfo(flightsql.SqlInfo(k), v)
+		                   ^
+obsolete/duckdb_flight_server.go:437:18: Error return value of `grpc.SetTrailer` is not checked (errcheck)
+		grpc.SetTrailer(ctx, trailers)
+		               ^
+pkg/services/prepared_statement_service.go:22:2: field `mu` is unused (unused)
+	mu         sync.RWMutex
+	^
+pkg/handlers/query_handler.go:230:24: func `(*queryHandler).createRecordBatchStream` is unused (unused)
+func (h *queryHandler) createRecordBatchStream(ctx context.Context, result *models.QueryResult) <-chan flight.StreamChunk {
+                       ^
+pkg/handlers/query_handler.go:284:6: func `appendValueToBuilder` is unused (unused)
+func appendValueToBuilder(builder array.Builder, arr arrow.Array, idx int) error {
+     ^
+pkg/repositories/duckdb/prepared_statement_repository.go:257:2: field `mu` is unused (unused)
+	mu        sync.RWMutex
+	^
+pkg/repositories/duckdb/query_repository.go:69:10: ineffectual assignment to err (ineffassign)
+			rows, err = db.QueryContext(ctx, query, args...)
+			      ^
+pkg/repositories/duckdb/query_repository.go:71:10: ineffectual assignment to err (ineffassign)
+			rows, err = db.QueryContext(ctx, query)
+			      ^
+pkg/repositories/duckdb/query_repository.go:162:12: ineffectual assignment to err (ineffassign)
+			result, err = db.ExecContext(ctx, statement, args...)
+			        ^

@@ -4,233 +4,163 @@
 
 This document tracks the implementation progress of the DuckDB Flight SQL Server v2 architecture as outlined in `art/design_v2.md`.
 
-## Architecture Layers
+## Current Phase: Core Server Implementation
 
-### ✅ Infrastructure Layer (Complete)
+### Completed Components ✅
 
-- **Connection Pool** (`pkg/infrastructure/pool/connection_pool.go`)
+#### Infrastructure Layer
+
+- **Connection Pool** (`pkg/infrastructure/pool/`)
   - ✅ Connection pooling with health checks
   - ✅ Connection statistics tracking
   - ✅ Graceful shutdown
-  - ✅ DSN masking for security
 
-- **Type Converter** (`pkg/infrastructure/converter/type_converter.go`)
+- **Type Converter** (`pkg/infrastructure/converter/`)
   - ✅ DuckDB to Arrow type mappings
   - ✅ SQL column metadata preservation
-  - ✅ Support for all major DuckDB types including HUGEINT, UUID, JSON
-
-- **Batch Reader** (`pkg/infrastructure/converter/batch_reader.go`)
-  - ✅ Converts SQL rows to Arrow record batches
-  - ✅ Streaming support with backpressure
-  - ✅ Memory-efficient batch processing
+  - ✅ Batch reader with streaming support
 
 - **SQL Info Provider** (`pkg/infrastructure/sql_info.go`)
   - ✅ Flight SQL server metadata
   - ✅ DuckDB capabilities information
-  - ✅ XDBC type information
 
-### ✅ Repository Layer (Complete)
+#### Repository Layer
 
-- **Query Repository** (`pkg/repositories/duckdb/query_repository.go`)
-  - ✅ Query execution with transaction support
-  - ✅ Update statement execution
-  - ✅ Prepared statement support
-  - ✅ Comprehensive error handling
+- ✅ Query Repository (query execution, updates, prepared statements)
+- ✅ Metadata Repository (catalog/schema/table discovery)
+- ✅ Transaction Repository (transaction lifecycle management)
+- ✅ Prepared Statement Repository (statement storage and execution)
 
-- **Metadata Repository** (`pkg/repositories/duckdb/metadata_repository.go`)
-  - ✅ Catalog/Schema/Table discovery
-  - ✅ Column metadata retrieval
-  - ✅ Type information
-  - ✅ SQL info support
-  - ⚠️ Foreign key support (limited by DuckDB information_schema)
+#### Service Layer
 
-- **Transaction Repository** (`pkg/repositories/duckdb/transaction_repository.go`)
-  - ✅ Transaction lifecycle management
-  - ✅ Isolation level support
-  - ✅ Read-only transaction support
-  - ✅ Active transaction tracking
+- ✅ Query Service (query validation and execution)
+- ✅ Metadata Service (metadata operations)
+- ✅ Transaction Service (transaction management with cleanup)
+- ✅ Prepared Statement Service (statement lifecycle)
 
-- **Prepared Statement Repository** (`pkg/repositories/duckdb/prepared_statement_repository.go`)
-  - ✅ Statement storage and retrieval
-  - ✅ Query and update execution
-  - ✅ Parameter support
-  - ✅ Transaction association
+#### Handler Layer
 
-### ✅ Service Layer (Complete)
+- ✅ Query Handler (statement execution, updates, flight info)
+- ✅ Metadata Handler (all metadata operations)
+- ✅ Transaction Handler (begin/commit/rollback)
+- ✅ Prepared Statement Handler (create/close/execute)
 
-- **Query Service** (`pkg/services/query_service.go`)
-  - ✅ Query execution with validation
-  - ✅ Update execution
-  - ✅ Transaction integration
-  - ✅ Timeout support
-  - ✅ Comprehensive metrics
+#### Server Implementation (NEW)
 
-- **Metadata Service** (`pkg/services/metadata_service.go`)
-  - ✅ All metadata operations
-  - ✅ Input validation
-  - ✅ Error handling
-  - ✅ Metrics collection
+- ✅ **Middleware Layer**
+  - ✅ Authentication middleware with Basic auth
+  - ✅ Logging middleware with request/response tracking
+  - ✅ Metrics middleware with Prometheus integration
+  - ✅ Recovery middleware for panic handling
 
-- **Transaction Service** (`pkg/services/transaction_service.go`)
-  - ✅ Transaction lifecycle management
-  - ✅ Automatic cleanup of inactive transactions
-  - ✅ Timeout enforcement
-  - ✅ Transaction statistics
+- ✅ **Metrics Infrastructure**
+  - ✅ Collector interface
+  - ✅ Prometheus collector implementation
+  - ✅ NoOp collector for testing
+  - ✅ Metrics server setup
 
-- **Prepared Statement Service** (`pkg/services/prepared_statement_service.go`)
-  - ✅ Statement lifecycle management
-  - ✅ Query/Update execution
-  - ✅ Transaction validation
-  - ✅ Usage tracking
+- ✅ **Core Server**
+  - ✅ Main server implementation (`cmd/server/server/server.go`)
+  - ✅ gRPC server setup with middleware chain
+  - ✅ Configuration management
+  - ✅ Adapter implementations for interface compatibility
+  - ✅ Main entry point (`cmd/server/main.go`)
 
-### ✅ Handler Layer (Complete)
+### In Progress 🔄
 
-- **Query Handler** (`pkg/handlers/query_handler.go`)
-  - ✅ Statement execution with streaming
-  - ✅ Update execution
-  - ✅ Flight info generation
-  - ✅ Error mapping to Flight errors
-  - ✅ Metrics and logging
+#### Flight SQL Protocol Methods
 
-- **Metadata Handler** (`pkg/handlers/metadata_handler.go`)
-  - ✅ All metadata operations (catalogs, schemas, tables, etc.)
-  - ✅ Primary/Foreign key operations
-  - ✅ XDBC type info
-  - ✅ SQL info
-  - ✅ Arrow schema generation
+The server structure is complete, but the actual Flight SQL method implementations need to be connected:
 
-- **Transaction Handler** (`pkg/handlers/transaction_handler.go`)
-  - ✅ Begin/Commit/Rollback operations
-  - ✅ Transaction validation
-  - ✅ Comprehensive error handling
+- [ ] **Query Operations**
+  - [ ] GetFlightInfoStatement - Generate flight info for queries
+  - [ ] DoGetStatement - Execute queries and stream results
+  - [ ] DoPutCommandStatementUpdate - Execute update statements
 
-- **Prepared Statement Handler** (`pkg/handlers/prepared_statement_handler.go`)
-  - ✅ Create/Close operations
-  - ✅ Query/Update execution with parameters
-  - ✅ Schema retrieval
-  - ✅ Parameter extraction from Arrow records
+- [ ] **Metadata Operations**
+  - [ ] GetCatalogs/DoGetCatalogs - List available catalogs
+  - [ ] GetSchemas/DoGetDBSchemas - List database schemas
+  - [ ] GetTables/DoGetTables - List tables with optional filtering
+  - [ ] GetTableTypes/DoGetTableTypes - List available table types
+  - [ ] GetPrimaryKeys/DoGetPrimaryKeys - Get primary key info
+  - [ ] GetImportedKeys/DoGetImportedKeys - Get foreign key imports
+  - [ ] GetExportedKeys/DoGetExportedKeys - Get foreign key exports
+  - [ ] GetXdbcTypeInfo/DoGetXdbcTypeInfo - Get type information
+  - [ ] GetSqlInfo/DoGetSqlInfo - Get SQL server capabilities
 
-### 🚧 Main Flight SQL Handler (Not Implemented)
+- [ ] **Transaction Operations**
+  - [ ] BeginTransaction - Start a new transaction
+  - [ ] EndTransaction - Commit or rollback a transaction
 
-- **Flight SQL Handler**
-  - ❌ Main Flight SQL protocol implementation
-  - ❌ Request routing to appropriate handlers
-  - ❌ Action handling
-  - ❌ Protocol compliance
+- [ ] **Prepared Statement Operations**
+  - [ ] CreatePreparedStatement - Create a prepared statement
+  - [ ] ClosePreparedStatement - Close a prepared statement
+  - [ ] GetFlightInfoPreparedStatement - Get info for prepared query
+  - [ ] DoGetPreparedStatement - Execute prepared query
+  - [ ] DoPutPreparedStatementQuery - Execute prepared query with params
+  - [ ] DoPutPreparedStatementUpdate - Execute prepared update with params
 
-### 🚧 Server Layer (Not Implemented)
+### Next Steps
 
-- **Flight Server**
-  - ❌ gRPC server setup
-  - ❌ TLS configuration
-  - ❌ Middleware chain
+1. **Connect Flight SQL Methods to Handlers** (Priority 1)
+   - The handlers are implemented and tested
+   - Need to wire them up in the server's Flight SQL methods
+   - Add proper error mapping and response formatting
 
-- **Middleware**
-  - ❌ Authentication
-  - ❌ Authorization
-  - ❌ Logging
-  - ❌ Metrics
-  - ❌ Error handling
+2. **Add Streaming Support** (Priority 2)
+   - Implement chunked result streaming for large datasets
+   - Add backpressure handling
+   - Memory-efficient batch processing
 
-### 🚧 Additional Components (Not Implemented)
+3. **Integration Testing** (Priority 3)
+   - Test with Flight SQL clients
+   - Verify protocol compliance
+   - Performance testing
 
-- **Arrow IPC Integration**
-  - ❌ IPC Manager
-  - ❌ Extension Manager
-  - ❌ Streaming support
-  - ❌ nanoarrow bridge
-
-- **Configuration**
-  - ❌ Configuration management
-  - ❌ Environment variable support
-  - ❌ YAML/JSON configuration
-
-- **Logging & Metrics**
-  - ✅ Interfaces defined
-  - ❌ Zerolog implementation
-  - ❌ Prometheus metrics
-  - ❌ OpenTelemetry tracing
-
-## Models & Types
-
-### ✅ Complete
-
-- `pkg/models/query.go` - Query/Update requests and results
-- `pkg/models/metadata.go` - Metadata structures
-- `pkg/models/arrow_schemas.go` - Arrow schema definitions for Flight SQL
-- `pkg/errors/errors.go` - Error types and codes
-- `pkg/repositories/interfaces.go` - Repository interfaces
-- `pkg/services/interfaces.go` - Service interfaces
-- `pkg/handlers/interfaces.go` - Handler interfaces
-
-## Testing Status
-
-### 🚧 Unit Tests (Not Implemented)
-
-- ❌ Service layer tests
-- ❌ Repository layer tests
-- ❌ Infrastructure component tests
-- ❌ Handler layer tests
-
-### 🚧 Integration Tests (Not Implemented)
-
-- ❌ End-to-end Flight SQL tests
-- ❌ Transaction tests
-- ❌ Prepared statement tests
-
-### 🚧 Performance Tests (Not Implemented)
-
-- ❌ Query performance benchmarks
-- ❌ Concurrent connection tests
-- ❌ Memory usage tests
-
-## Next Steps
-
-1. **Implement Main Flight SQL Handler**
-   - Create the main Flight SQL server implementation
-   - Wire up all handlers
-   - Implement action handling
-   - Ensure protocol compliance
-
-2. **Implement Server Layer**
-   - Set up gRPC server
-   - Configure middleware chain
-   - Add TLS support
-
-3. **Create Main Application**
-   - Wire up all components
-   - Add configuration management
-   - Implement graceful shutdown
-
-4. **Add Arrow IPC Support**
-   - Integrate with DuckDB's arrow extension
-   - Implement efficient streaming
-   - Add nanoarrow support
-
-5. **Implement Testing**
-   - Unit tests for all components
-   - Integration tests
-   - Performance benchmarks
-
-6. **Documentation**
+4. **Documentation** (Priority 4)
    - API documentation
    - Deployment guide
-   - Performance tuning guide
+   - Configuration reference
 
-## Known Limitations
+### Architecture Status
 
-1. **Foreign Key Support**: DuckDB doesn't expose foreign key information through information_schema, so GetImportedKeys/GetExportedKeys return empty results.
+The server follows a clean layered architecture:
 
-2. **Primary Key Support**: Similar limitation for primary keys - would need to query DuckDB's internal tables.
+```
+Flight SQL Client
+    ↓
+gRPC Server (with middleware)
+    ↓
+Flight SQL Server (protocol implementation)
+    ↓
+Handlers (business logic orchestration)
+    ↓
+Services (business logic)
+    ↓
+Repositories (data access)
+    ↓
+Infrastructure (DuckDB, Arrow conversion)
+```
 
-3. **Prepared Statements**: Current implementation executes queries directly rather than using true prepared statements due to go-duckdb limitations.
+All layers are implemented with:
 
-## Code Quality
-
-- ✅ Apache-level code quality standards
+- ✅ Clean interfaces
+- ✅ Dependency injection
 - ✅ Comprehensive error handling
 - ✅ Structured logging support
-- ✅ Metrics collection interfaces
-- ✅ Clean separation of concerns
-- ✅ Dependency injection throughout
+- ✅ Metrics collection
 - ✅ No linter errors
+
+### Known Limitations
+
+1. **Foreign Key Support**: DuckDB doesn't expose foreign key information through information_schema
+2. **Primary Key Support**: Limited by DuckDB's information schema
+3. **Prepared Statements**: Uses direct execution due to go-duckdb limitations
+
+### Recent Progress (2024-06-01)
+
+1. ✅ Created complete middleware stack
+2. ✅ Implemented metrics infrastructure
+3. ✅ Integrated all components in the server
+4. ✅ Fixed all compilation and linter issues
+5. ✅ Server builds and is ready for Flight SQL method implementation

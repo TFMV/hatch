@@ -227,6 +227,14 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 	return nil
 }
 
+// orEmpty returns an empty string if the pointer is nil, otherwise the pointed value
+func orEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // GetFlightInfoStatement implements the FlightSQL interface.
 func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
 	timer := s.metrics.StartTimer("flight_get_info_statement")
@@ -250,9 +258,24 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 
 	s.logger.Debug().Msg("DoGetStatement")
 
-	// For now, we execute the query directly
-	// In a production system, we would use the ticket to retrieve cached results
-	return nil, nil, status.Error(codes.Unimplemented, "DoGetStatement not yet implemented")
+	// Extract the query handle from the ticket
+	handle := ticket.GetStatementHandle()
+
+	// TODO:For now, we'll execute the query directly from the handle
+	// In a production system, you might cache query results and retrieve them here
+	query := string(handle)
+
+	s.logger.Debug().Str("query", query).Msg("Executing statement from ticket")
+
+	// Execute the query using the query handler
+	schema, chunks, err := s.queryHandler.ExecuteStatement(ctx, query, "")
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
+		return nil, nil, err
+	}
+
+	s.metrics.IncrementCounter("flight_queries_executed")
+	return schema, chunks, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.
@@ -480,6 +503,270 @@ func (s *FlightSQLServer) ClosePreparedStatement(ctx context.Context, req flight
 
 	s.metrics.IncrementCounter("flight_prepared_statements_closed")
 	return nil
+}
+
+// GetFlightInfoTableTypes implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoTableTypes(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_table_types")
+	defer timer.Stop()
+
+	s.logger.Debug().Msg("GetFlightInfoTableTypes")
+
+	schema, _, err := s.metadataHandler.GetTableTypes(ctx)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoTableTypes")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetTableTypes implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_table_types")
+	defer timer.Stop()
+
+	s.logger.Debug().Msg("DoGetTableTypes")
+
+	return s.metadataHandler.GetTableTypes(ctx)
+}
+
+// GetFlightInfoPrimaryKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoPrimaryKeys(ctx context.Context, cmd flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_primary_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("GetFlightInfoPrimaryKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	schema, _, err := s.metadataHandler.GetPrimaryKeys(ctx, catalog, dbSchema, table)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPrimaryKeys")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetPrimaryKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetPrimaryKeys(ctx context.Context, cmd flightsql.TableRef) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_primary_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("DoGetPrimaryKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	return s.metadataHandler.GetPrimaryKeys(ctx, catalog, dbSchema, table)
+}
+
+// GetFlightInfoImportedKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoImportedKeys(ctx context.Context, cmd flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_imported_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("GetFlightInfoImportedKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	schema, _, err := s.metadataHandler.GetImportedKeys(ctx, catalog, dbSchema, table)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoImportedKeys")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetImportedKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetImportedKeys(ctx context.Context, cmd flightsql.TableRef) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_imported_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("DoGetImportedKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	return s.metadataHandler.GetImportedKeys(ctx, catalog, dbSchema, table)
+}
+
+// GetFlightInfoExportedKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoExportedKeys(ctx context.Context, cmd flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_exported_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("GetFlightInfoExportedKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	schema, _, err := s.metadataHandler.GetExportedKeys(ctx, catalog, dbSchema, table)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoExportedKeys")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetExportedKeys implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetExportedKeys(ctx context.Context, cmd flightsql.TableRef) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_exported_keys")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Str("catalog", orEmpty(cmd.Catalog)).
+		Str("schema", orEmpty(cmd.DBSchema)).
+		Str("table", cmd.Table).
+		Msg("DoGetExportedKeys")
+
+	catalog := cmd.Catalog
+	dbSchema := cmd.DBSchema
+	table := cmd.Table
+
+	return s.metadataHandler.GetExportedKeys(ctx, catalog, dbSchema, table)
+}
+
+// GetFlightInfoXdbcTypeInfo implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(ctx context.Context, cmd flightsql.GetXdbcTypeInfo, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_xdbc_type_info")
+	defer timer.Stop()
+
+	s.logger.Debug().Msg("GetFlightInfoXdbcTypeInfo")
+
+	dataType := cmd.GetDataType()
+
+	schema, _, err := s.metadataHandler.GetXdbcTypeInfo(ctx, dataType)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoXdbcTypeInfo")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetXdbcTypeInfo implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetXdbcTypeInfo(ctx context.Context, cmd flightsql.GetXdbcTypeInfo) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_xdbc_type_info")
+	defer timer.Stop()
+
+	s.logger.Debug().Msg("DoGetXdbcTypeInfo")
+
+	dataType := cmd.GetDataType()
+
+	return s.metadataHandler.GetXdbcTypeInfo(ctx, dataType)
+}
+
+// GetFlightInfoSqlInfo implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoSqlInfo(ctx context.Context, cmd flightsql.GetSqlInfo, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_sql_info")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Int("info_count", len(cmd.GetInfo())).
+		Msg("GetFlightInfoSqlInfo")
+
+	info := cmd.GetInfo()
+
+	schema, _, err := s.metadataHandler.GetSqlInfo(ctx, info)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoSqlInfo")
+		return nil, err
+	}
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetSqlInfo implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetSqlInfo(ctx context.Context, cmd flightsql.GetSqlInfo) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_sql_info")
+	defer timer.Stop()
+
+	s.logger.Debug().
+		Int("info_count", len(cmd.GetInfo())).
+		Msg("DoGetSqlInfo")
+
+	info := cmd.GetInfo()
+
+	return s.metadataHandler.GetSqlInfo(ctx, info)
 }
 
 // registerSqlInfo registers SQL info with the base server.
