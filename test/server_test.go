@@ -63,7 +63,7 @@ func NewTestServer(t *testing.T) *TestServer {
 	}()
 
 	// Create client connection
-	conn, err := grpc.Dial("localhost:8815", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient("0.0.0.0:8815", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 
 	// Create Flight client
@@ -152,10 +152,11 @@ func (t *testTimer) Stop() float64 {
 
 // assertFlightInfo asserts that a FlightInfo has the expected properties
 func assertFlightInfo(t *testing.T, info *flight.FlightInfo, expectedSchema *arrow.Schema) {
+	assert.NotNil(t, info)
 	if info == nil {
 		t.Log("assertFlightInfo received a nil FlightInfo object")
+		return
 	}
-	assert.NotNil(t, info)
 	assert.NotEmpty(t, info.Endpoint)
 	assert.NotNil(t, info.FlightDescriptor)
 

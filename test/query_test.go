@@ -4,10 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,26 +178,6 @@ func testQueryCaching(srv *TestServer, tableName string) func(*testing.T) {
 		require.NoError(t, err)
 		assertStreamChunks(t, chunks, schema, 1)
 	}
-}
-
-// Helper function to create a test record
-func createTestRecord(allocator memory.Allocator) arrow.Record {
-	schema := arrow.NewSchema(
-		[]arrow.Field{
-			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-			{Name: "name", Type: arrow.BinaryTypes.String},
-		},
-		nil,
-	)
-
-	builder := array.NewRecordBuilder(allocator, schema)
-	defer builder.Release()
-
-	// Add data
-	builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1}, nil)
-	builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test"}, nil)
-
-	return builder.NewRecord()
 }
 
 // createTestTable creates a test table in the database
