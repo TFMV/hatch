@@ -4,6 +4,8 @@ package server
 import (
 	"time"
 
+	"github.com/TFMV/flight/pkg/handlers"
+	"github.com/TFMV/flight/pkg/services"
 	"github.com/rs/zerolog"
 )
 
@@ -68,40 +70,66 @@ func (l *loggerAdapter) addFields(event *zerolog.Event, keysAndValues ...interfa
 	}
 }
 
-// metricsAdapter adapts MetricsCollector to the handlers/services MetricsCollector interface.
-type metricsAdapter struct {
+// handlerMetricsAdapter adapts MetricsCollector to the handlers.MetricsCollector interface.
+type handlerMetricsAdapter struct {
 	collector MetricsCollector
 }
 
-func (m *metricsAdapter) IncrementCounter(name string, labels ...string) {
-	m.collector.IncrementCounter(name, labels...)
+func (m *handlerMetricsAdapter) IncrementCounter(name string, tags ...string) {
+	m.collector.IncrementCounter(name, tags...)
 }
 
-func (m *metricsAdapter) RecordHistogram(name string, value float64, labels ...string) {
-	m.collector.RecordHistogram(name, value, labels...)
+func (m *handlerMetricsAdapter) RecordHistogram(name string, value float64, tags ...string) {
+	m.collector.RecordHistogram(name, value, tags...)
 }
 
-func (m *metricsAdapter) RecordGauge(name string, value float64, labels ...string) {
-	m.collector.RecordGauge(name, value, labels...)
+func (m *handlerMetricsAdapter) RecordGauge(name string, value float64, tags ...string) {
+	m.collector.RecordGauge(name, value, tags...)
 }
 
-func (m *metricsAdapter) StartTimer(name string) metricsTimer {
-	return &timerAdapter{timer: m.collector.StartTimer(name)}
+func (m *handlerMetricsAdapter) StartTimer(name string) handlers.Timer {
+	return &handlerTimerAdapter{timer: m.collector.StartTimer(name)}
 }
 
-// metricsTimer wraps the Timer interface for the adapters.
-type metricsTimer interface {
-	Stop() time.Duration
-}
-
-// timerAdapter adapts Timer to return time.Duration.
-type timerAdapter struct {
+// handlerTimerAdapter adapts Timer to handlers.Timer interface.
+type handlerTimerAdapter struct {
 	timer Timer
 }
 
-func (t *timerAdapter) Stop() time.Duration {
-	seconds := t.timer.Stop()
-	return time.Duration(seconds * float64(time.Second))
+func (t *handlerTimerAdapter) Stop() {
+	t.timer.Stop()
+}
+
+// serviceMetricsAdapter adapts MetricsCollector to the services.MetricsCollector interface.
+type serviceMetricsAdapter struct {
+	collector MetricsCollector
+}
+
+func (m *serviceMetricsAdapter) IncrementCounter(name string, labels ...string) {
+	m.collector.IncrementCounter(name, labels...)
+}
+
+func (m *serviceMetricsAdapter) RecordHistogram(name string, value float64, labels ...string) {
+	m.collector.RecordHistogram(name, value, labels...)
+}
+
+func (m *serviceMetricsAdapter) RecordGauge(name string, value float64, labels ...string) {
+	m.collector.RecordGauge(name, value, labels...)
+}
+
+func (m *serviceMetricsAdapter) StartTimer(name string) services.Timer {
+	return &serviceTimerAdapter{timer: m.collector.StartTimer(name), start: time.Now()}
+}
+
+// serviceTimerAdapter adapts Timer to services.Timer interface.
+type serviceTimerAdapter struct {
+	timer Timer
+	start time.Time
+}
+
+func (t *serviceTimerAdapter) Stop() time.Duration {
+	t.timer.Stop()
+	return time.Since(t.start)
 }
 
 // TransactionServiceCloser extends TransactionService with a Stop method.

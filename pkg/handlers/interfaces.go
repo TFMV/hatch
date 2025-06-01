@@ -6,50 +6,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 )
-
-// FlightSQLHandler defines the main Flight SQL handler interface.
-type FlightSQLHandler interface {
-	flight.FlightServiceServer
-
-	// Query operations
-	GetFlightInfoStatement(ctx context.Context, query flightsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetStatement(ctx context.Context, ticket flightsql.StatementQueryTicket) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	DoPutCommandStatementUpdate(ctx context.Context, cmd flightsql.StatementUpdate) (int64, error)
-
-	// Metadata operations
-	GetFlightInfoCatalogs(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoSchemas(ctx context.Context, cmd flightsql.GetDBSchemas, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetDBSchemas(ctx context.Context, cmd flightsql.GetDBSchemas) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoTables(ctx context.Context, cmd flightsql.GetTables, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetTables(ctx context.Context, cmd flightsql.GetTables) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoTableTypes(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoPrimaryKeys(ctx context.Context, cmd flightsql.PrimaryKeyRequest, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetPrimaryKeys(ctx context.Context, cmd flightsql.PrimaryKeyRequest) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoImportedKeys(ctx context.Context, cmd flightsql.ImportedKeysRequest, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetImportedKeys(ctx context.Context, cmd flightsql.ImportedKeysRequest) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoExportedKeys(ctx context.Context, cmd flightsql.ExportedKeysRequest, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetExportedKeys(ctx context.Context, cmd flightsql.ExportedKeysRequest) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoXdbcTypeInfo(ctx context.Context, cmd *flightsql.GetXdbcTypeInfo, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetXdbcTypeInfo(ctx context.Context, cmd *flightsql.GetXdbcTypeInfo) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	GetFlightInfoSqlInfo(ctx context.Context, cmd flightsql.GetSqlInfo, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetSqlInfo(ctx context.Context, cmd flightsql.GetSqlInfo) (*arrow.Schema, <-chan flight.StreamChunk, error)
-
-	// Transaction operations
-	BeginTransaction(ctx context.Context, req flightsql.ActionBeginTransactionRequest) ([]byte, error)
-	EndTransaction(ctx context.Context, req flightsql.ActionEndTransactionRequest) error
-
-	// Prepared statement operations
-	CreatePreparedStatement(ctx context.Context, req flightsql.ActionCreatePreparedStatementRequest) (flightsql.ActionCreatePreparedStatementResult, error)
-	ClosePreparedStatement(ctx context.Context, req flightsql.ActionClosePreparedStatementRequest) error
-	GetFlightInfoPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error)
-	DoGetPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	DoPutPreparedStatementQuery(ctx context.Context, cmd flightsql.PreparedStatementQuery, reader flight.MessageReader, writer flight.MetadataWriter) ([]byte, error)
-	DoPutPreparedStatementUpdate(ctx context.Context, cmd flightsql.PreparedStatementUpdate, reader flight.MessageReader) (int64, error)
-}
 
 // QueryHandler handles query-related operations.
 type QueryHandler interface {

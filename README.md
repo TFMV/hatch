@@ -1,4 +1,4 @@
-# 🦆 DuckDB Flight SQL Server
+# 🦆 Hatch
 
 *Zero‑copy analytics, delivered at Mach Arrow.*
 
@@ -6,7 +6,7 @@
 [![Build](https://github.com/TFMV/flight/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/flight/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **DuckDB ↔︎ Arrow Flight.** One binary. No JVM. No friction. Query local Parquet or remote object storage, stream Arrow IPC back in real time, and keep your CPU caches warm while you do it.
+> **Hatch: DuckDB ↔︎ Arrow Flight.** One binary. No JVM. No friction. Query local Parquet or remote object storage, stream Arrow IPC back in real time, and keep your CPU caches warm while you do it.
 
 ---
 

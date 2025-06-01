@@ -64,7 +64,9 @@ func init() {
 	rootCmd.PersistentFlags().Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 
 	// Bind flags to viper
-	viper.BindPFlags(rootCmd.PersistentFlags())
+	if err := viper.BindPFlags(rootCmd.PersistentFlags()); err != nil {
+		panic(fmt.Errorf("failed to bind flags: %w", err))
+	}
 	viper.SetEnvPrefix("FLIGHT")
 	viper.AutomaticEnv()
 
@@ -112,8 +114,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		metricsCollector = metrics.NewNoOpCollector()
 	}
 
-	// Create server
-	srv, err := server.New(cfg, logger, metricsCollector)
+	// Create server with metrics adapter
+	srv, err := server.New(cfg, logger, &metricsAdapter{collector: metricsCollector})
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
@@ -314,4 +316,34 @@ func startMetricsServer(address string, logger zerolog.Logger) {
 	if err := server.Start(); err != nil {
 		logger.Error().Err(err).Msg("Failed to start metrics server")
 	}
+}
+
+// metricsAdapter adapts metrics.Collector to server.MetricsCollector
+type metricsAdapter struct {
+	collector metrics.Collector
+}
+
+func (m *metricsAdapter) IncrementCounter(name string, labels ...string) {
+	m.collector.IncrementCounter(name, labels...)
+}
+
+func (m *metricsAdapter) RecordHistogram(name string, value float64, labels ...string) {
+	m.collector.RecordHistogram(name, value, labels...)
+}
+
+func (m *metricsAdapter) RecordGauge(name string, value float64, labels ...string) {
+	m.collector.RecordGauge(name, value, labels...)
+}
+
+func (m *metricsAdapter) StartTimer(name string) server.Timer {
+	return &timerAdapter{timer: m.collector.StartTimer(name)}
+}
+
+// timerAdapter adapts metrics.Timer to server.Timer
+type timerAdapter struct {
+	timer metrics.Timer
+}
+
+func (t *timerAdapter) Stop() float64 {
+	return t.timer.Stop()
 }

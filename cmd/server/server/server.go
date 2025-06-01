@@ -18,7 +18,7 @@ import (
 	"github.com/TFMV/flight/cmd/server/config"
 	"github.com/TFMV/flight/cmd/server/middleware"
 	"github.com/TFMV/flight/pkg/handlers"
-	"github.com/TFMV/flight/pkg/infrastructure/converter"
+	"github.com/TFMV/flight/pkg/infrastructure"
 	"github.com/TFMV/flight/pkg/infrastructure/pool"
 	"github.com/TFMV/flight/pkg/repositories/duckdb"
 	"github.com/TFMV/flight/pkg/services"
@@ -97,41 +97,51 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 	// Create allocator
 	allocator := memory.NewGoAllocator()
 
+	// Create SQL info provider
+	sqlInfoProvider := infrastructure.NewSQLInfoProvider(allocator)
+
 	// Create repositories
-	queryRepo := duckdb.NewQueryRepository(connPool, logger)
-	metadataRepo := duckdb.NewMetadataRepository(connPool, converter.New(logger), logger)
+	queryRepo := duckdb.NewQueryRepository(connPool, allocator, logger)
+	metadataRepo := duckdb.NewMetadataRepository(connPool, sqlInfoProvider, logger)
 	transactionRepo := duckdb.NewTransactionRepository(connPool, logger)
-	preparedStatementRepo := duckdb.NewPreparedStatementRepository(connPool, logger)
+	preparedStatementRepo := duckdb.NewPreparedStatementRepository(connPool, allocator, logger)
+
+	// Create service adapters
+	serviceLogger := &loggerAdapter{logger}
+	serviceMetrics := &serviceMetricsAdapter{metrics}
 
 	// Create services
-	queryService := services.NewQueryService(queryRepo, nil, &loggerAdapter{logger}, &metricsAdapter{metrics})
-	metadataService := services.NewMetadataService(metadataRepo, &loggerAdapter{logger}, &metricsAdapter{metrics})
+	metadataService := services.NewMetadataService(metadataRepo, serviceLogger, serviceMetrics)
 	transactionService := services.NewTransactionService(
 		transactionRepo,
 		cfg.Transaction.CleanupInterval,
-		&loggerAdapter{logger},
-		&metricsAdapter{metrics},
+		serviceLogger,
+		serviceMetrics,
 	)
 	preparedStatementService := services.NewPreparedStatementService(
 		preparedStatementRepo,
 		transactionService,
-		&loggerAdapter{logger},
-		&metricsAdapter{metrics},
+		serviceLogger,
+		serviceMetrics,
 	)
 
-	// Update query service with transaction service
-	queryService = services.NewQueryService(queryRepo, transactionService, &loggerAdapter{logger}, &metricsAdapter{metrics})
+	// Create query service with transaction service
+	queryServiceWithTxn := services.NewQueryService(queryRepo, transactionService, serviceLogger, serviceMetrics)
+
+	// Create handler adapters
+	handlerLogger := &loggerAdapter{logger}
+	handlerMetrics := &handlerMetricsAdapter{metrics}
 
 	// Create handlers
-	queryHandler := handlers.NewQueryHandler(queryService, allocator, &loggerAdapter{logger}, &metricsAdapter{metrics})
-	metadataHandler := handlers.NewMetadataHandler(metadataService, allocator, &loggerAdapter{logger}, &metricsAdapter{metrics})
-	transactionHandler := handlers.NewTransactionHandler(transactionService, &loggerAdapter{logger}, &metricsAdapter{metrics})
+	queryHandler := handlers.NewQueryHandler(queryServiceWithTxn, allocator, handlerLogger, handlerMetrics)
+	metadataHandler := handlers.NewMetadataHandler(metadataService, allocator, handlerLogger, handlerMetrics)
+	transactionHandler := handlers.NewTransactionHandler(transactionService, handlerLogger, handlerMetrics)
 	preparedStatementHandler := handlers.NewPreparedStatementHandler(
 		preparedStatementService,
-		queryService,
+		queryServiceWithTxn,
 		allocator,
-		&loggerAdapter{logger},
-		&metricsAdapter{metrics},
+		handlerLogger,
+		handlerMetrics,
 	)
 
 	srv := &FlightSQLServer{
@@ -144,7 +154,7 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		metadataHandler:          metadataHandler,
 		transactionHandler:       transactionHandler,
 		preparedStatementHandler: preparedStatementHandler,
-		queryService:             queryService,
+		queryService:             queryServiceWithTxn,
 		metadataService:          metadataService,
 		transactionService:       transactionService,
 		preparedStatementService: preparedStatementService,
@@ -181,8 +191,9 @@ func (s *FlightSQLServer) GetMiddleware() []grpc.ServerOption {
 	opts = append(opts, grpc.ChainUnaryInterceptor(loggingMiddleware.UnaryInterceptor()))
 	opts = append(opts, grpc.ChainStreamInterceptor(loggingMiddleware.StreamInterceptor()))
 
-	// Add metrics middleware
-	metricsMiddleware := middleware.NewMetricsMiddleware(s.metrics)
+	// Create metrics adapter for middleware
+	middlewareMetrics := &middlewareMetricsAdapter{s.metrics}
+	metricsMiddleware := middleware.NewMetricsMiddleware(middlewareMetrics)
 	opts = append(opts, grpc.ChainUnaryInterceptor(metricsMiddleware.UnaryInterceptor()))
 	opts = append(opts, grpc.ChainStreamInterceptor(metricsMiddleware.StreamInterceptor()))
 
@@ -202,9 +213,9 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 
 	s.logger.Info().Msg("Closing Flight SQL server")
 
-	// Stop transaction service
-	if svc, ok := s.transactionService.(*services.TransactionServiceCloser); ok {
-		svc.Stop()
+	// Stop transaction service if it has a Stop method
+	if stopper, ok := s.transactionService.(interface{ Stop() }); ok {
+		stopper.Stop()
 	}
 
 	// Close connection pool
@@ -413,13 +424,13 @@ func (s *FlightSQLServer) EndTransaction(ctx context.Context, req flightsql.Acti
 		Msg("EndTransaction")
 
 	switch action {
-	case flightsql.EndTransactionRequestCommit:
+	case flightsql.EndTransactionCommit:
 		if err := s.transactionHandler.Commit(ctx, txnID); err != nil {
 			s.metrics.IncrementCounter("flight_errors", "method", "EndTransaction", "action", "commit")
 			return err
 		}
 		s.metrics.IncrementCounter("flight_transactions_committed")
-	case flightsql.EndTransactionRequestRollback:
+	case flightsql.EndTransactionRollback:
 		if err := s.transactionHandler.Rollback(ctx, txnID); err != nil {
 			s.metrics.IncrementCounter("flight_errors", "method", "EndTransaction", "action", "rollback")
 			return err
@@ -474,22 +485,76 @@ func (s *FlightSQLServer) ClosePreparedStatement(ctx context.Context, req flight
 // registerSqlInfo registers SQL info with the base server.
 func (s *FlightSQLServer) registerSqlInfo() error {
 	// Server info
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerName, "DuckDB Flight SQL Server")
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerVersion, "1.0.0")
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerArrowVersion, "18.0.0")
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerName, "DuckDB Flight SQL Server"); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerVersion, "1.0.0"); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerArrowVersion, "18.0.0"); err != nil {
+		return err
+	}
 
 	// SQL language support
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLCatalog, true)
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLSchema, true)
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLTable, true)
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoIdentifierCase, int32(flightsql.SqlInfoIdentifierCaseSensitivityCaseSensitive))
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoQuotedIdentifierCase, int32(flightsql.SqlInfoIdentifierCaseSensitivityCaseSensitive))
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLCatalog, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLSchema, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLTable, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoIdentifierCase, int32(1)); err != nil { // Case sensitive
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoQuotedIdentifierCase, int32(1)); err != nil { // Case sensitive
+		return err
+	}
 
 	// Transaction support
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransaction, int32(flightsql.SqlInfoFlightSqlServerTransactionTransaction))
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerCancel, false)
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerStatementTimeout, int32(0))
-	s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransactionTimeout, int32(0))
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransaction, int32(0)); err != nil { // Transactions supported
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerCancel, false); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerStatementTimeout, int32(0)); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransactionTimeout, int32(0)); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+// middlewareMetricsAdapter adapts MetricsCollector to middleware.MetricsCollector interface.
+type middlewareMetricsAdapter struct {
+	collector MetricsCollector
+}
+
+func (m *middlewareMetricsAdapter) IncrementCounter(name string, labels ...string) {
+	m.collector.IncrementCounter(name, labels...)
+}
+
+func (m *middlewareMetricsAdapter) RecordHistogram(name string, value float64, labels ...string) {
+	m.collector.RecordHistogram(name, value, labels...)
+}
+
+func (m *middlewareMetricsAdapter) RecordGauge(name string, value float64, labels ...string) {
+	m.collector.RecordGauge(name, value, labels...)
+}
+
+func (m *middlewareMetricsAdapter) StartTimer(name string) middleware.Timer {
+	return &middlewareTimerAdapter{timer: m.collector.StartTimer(name)}
+}
+
+// middlewareTimerAdapter adapts Timer to middleware.Timer interface.
+type middlewareTimerAdapter struct {
+	timer Timer
+}
+
+func (t *middlewareTimerAdapter) Stop() float64 {
+	return t.timer.Stop()
 }
