@@ -130,6 +130,7 @@ type CacheConfig struct {
 	MaxSize            int64           `yaml:"max_size" json:"max_size"`
 	TTL                time.Duration   `yaml:"ttl" json:"ttl"`
 	CleanupInterval    time.Duration   `yaml:"cleanup_interval" json:"cleanup_interval"`
+	EnableStats        bool            `yaml:"enable_stats" json:"enable_stats"`
 	PreparedStatements CacheItemConfig `yaml:"prepared_statements" json:"prepared_statements"`
 	QueryResults       CacheItemConfig `yaml:"query_results" json:"query_results"`
 }
@@ -277,16 +278,17 @@ func DefaultConfig() *Config {
 		Cache: CacheConfig{
 			Enabled:         true,
 			MaxSize:         100 * 1024 * 1024, // 100MB
-			TTL:             10 * time.Minute,
-			CleanupInterval: 5 * time.Minute,
+			TTL:             5 * time.Minute,
+			CleanupInterval: 1 * time.Minute,
+			EnableStats:     true,
 			PreparedStatements: CacheItemConfig{
 				Enabled: true,
 				MaxSize: 10 * 1024 * 1024, // 10MB
-				TTL:     30 * time.Minute,
+				TTL:     1 * time.Hour,
 			},
 			QueryResults: CacheItemConfig{
 				Enabled: true,
-				MaxSize: 90 * 1024 * 1024, // 90MB
+				MaxSize: 50 * 1024 * 1024, // 50MB
 				TTL:     5 * time.Minute,
 			},
 		},

@@ -37,7 +37,7 @@ type FlightSQLServer struct {
 	allocator   memory.Allocator
 	logger      zerolog.Logger
 	metrics     MetricsCollector
-	cache       cache.Cache
+	memoryCache cache.Cache
 	cacheKeyGen cache.CacheKeyGenerator
 
 	// Handlers
@@ -106,8 +106,8 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		WithTTL(cfg.Cache.TTL).
 		WithAllocator(allocator).
 		WithStats(cfg.Cache.EnableStats)
-	cache := cache.NewMemoryCache(cacheCfg.MaxSize, cacheCfg.Allocator)
-	cacheKeyGen := &cache.DefaultCacheKeyGenerator{}
+	memoryCache := cache.NewMemoryCache(cacheCfg.MaxSize, cacheCfg.Allocator)
+	var cacheKeyGen cache.CacheKeyGenerator = &cache.DefaultCacheKeyGenerator{}
 
 	// Create SQL info provider
 	sqlInfoProvider := infrastructure.NewSQLInfoProvider(allocator)
@@ -162,7 +162,7 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		allocator:                allocator,
 		logger:                   logger,
 		metrics:                  metrics,
-		cache:                    cache,
+		memoryCache:              memoryCache,
 		cacheKeyGen:              cacheKeyGen,
 		queryHandler:             queryHandler,
 		metadataHandler:          metadataHandler,
@@ -233,7 +233,7 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 	}
 
 	// Close cache
-	if err := s.cache.Close(); err != nil {
+	if err := s.memoryCache.Close(); err != nil {
 		s.logger.Error().Err(err).Msg("Error closing cache")
 	}
 

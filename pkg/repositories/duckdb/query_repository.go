@@ -51,19 +51,29 @@ func (r *queryRepository) ExecuteQuery(ctx context.Context, query string, txn re
 			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
 		}
 
+		var err error
 		if len(args) > 0 {
-			rows, _ = dbTx.QueryContext(ctx, query, args...)
+			rows, err = dbTx.QueryContext(ctx, query, args...)
 		} else {
-			rows, _ = dbTx.QueryContext(ctx, query)
+			rows, err = dbTx.QueryContext(ctx, query)
+		}
+		if err != nil {
+			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute query with transaction: %s", query)
 		}
 	} else {
 		// Use connection pool
-		db, _ := r.pool.Get(ctx)
+		db, err := r.pool.Get(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
+		}
 
 		if len(args) > 0 {
-			rows, _ = db.QueryContext(ctx, query, args...)
+			rows, err = db.QueryContext(ctx, query, args...)
 		} else {
-			rows, _ = db.QueryContext(ctx, query)
+			rows, err = db.QueryContext(ctx, query)
+		}
+		if err != nil {
+			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute query: %s", query)
 		}
 	}
 
@@ -135,24 +145,37 @@ func (r *queryRepository) ExecuteUpdate(ctx context.Context, statement string, t
 			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
 		}
 
+		var err error
 		if len(args) > 0 {
-			result, _ = dbTx.ExecContext(ctx, statement, args...)
+			result, err = dbTx.ExecContext(ctx, statement, args...)
 		} else {
-			result, _ = dbTx.ExecContext(ctx, statement)
+			result, err = dbTx.ExecContext(ctx, statement)
+		}
+		if err != nil {
+			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute update with transaction: %s", statement)
 		}
 	} else {
 		// Use connection pool
-		db, _ := r.pool.Get(ctx)
+		db, err := r.pool.Get(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
+		}
 
 		if len(args) > 0 {
-			result, _ = db.ExecContext(ctx, statement, args...)
+			result, err = db.ExecContext(ctx, statement, args...)
 		} else {
-			result, _ = db.ExecContext(ctx, statement)
+			result, err = db.ExecContext(ctx, statement)
+		}
+		if err != nil {
+			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute update: %s", statement)
 		}
 	}
 
 	// Get rows affected
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, errors.Wrap(err, errors.CodeQueryFailed, "failed to get rows affected")
+	}
 
 	executionTime := time.Since(start)
 
@@ -181,13 +204,22 @@ func (r *queryRepository) Prepare(ctx context.Context, query string, txn reposit
 			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
 		}
 
-		stmt, _ := dbTx.PrepareContext(ctx, query)
+		stmt, err := dbTx.PrepareContext(ctx, query)
+		if err != nil {
+			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to prepare statement with transaction: %s", query)
+		}
 		return stmt, nil
 	}
 
 	// Use connection pool
-	db, _ := r.pool.Get(ctx)
+	db, err := r.pool.Get(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
+	}
 
-	stmt, _ := db.PrepareContext(ctx, query)
+	stmt, err := db.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to prepare statement: %s", query)
+	}
 	return stmt, nil
 }

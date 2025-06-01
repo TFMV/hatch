@@ -8,7 +8,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/google/uuid"
 
 	"github.com/TFMV/flight/pkg/errors"
 	"github.com/TFMV/flight/pkg/models"
@@ -148,7 +147,7 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 	// For now, create a minimal FlightInfo
 	// In a real implementation, we would analyze the query to provide accurate schema
 	ticket := &flight.Ticket{
-		Ticket: []byte(uuid.New().String()),
+		Ticket: []byte(query),
 	}
 
 	endpoint := &flight.FlightEndpoint{

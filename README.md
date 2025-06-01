@@ -2,11 +2,17 @@
 
 *Zero‑copy analytics, delivered at Mach Arrow.*
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/flight)](https://goreportcard.com/report/github.com/TFMV/flight)
-[![Build](https://github.com/TFMV/flight/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/flight/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Hatch: DuckDB ↔︎ Arrow Flight.** One binary. No JVM. No friction. Query local Parquet or remote object storage, stream Arrow IPC back in real time, and keep your CPU caches warm while you do it.
+## The Big Idea
+
+A great engine shouldn’t be gated by heavyweight infra.
+Hatch keeps DuckDB’s magic small, open, and composable—so your data can fly wherever you need it.
+
+Spin up. Query. Stream. Done.
+
+Embedded analytics just broke orbit.
 
 ---
 
@@ -23,13 +29,37 @@
 
 ---
 
+## Why Hatch Exists
+
+### 1. Arrow‑Native Networking Is Inevitable  
+
+Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. DuckDB already “speaks Arrow” internally—Hatch lets it **broadcast**.
+
+### 2. Self‑Hosted ≠ Heavyweight  
+
+Options today: embed DuckDB yourself, bolt it onto Python/Java web servers, or go proprietary.  
+Hatch offers a **third way**: a 10 MB server that does one thing—serve SQL over Flight.
+
+### 3. Pipelines Need Lightweight Nodes  
+
+Modern data stacks are Lego bricks: Redis for cache, NATS for events, DuckDB for OLAP. Hatch slots into that ecosystem—just stream Arrow in, stream Arrow out.
+
+### 4. A Playground for Arrow Minds  
+
+Want column‑level ACLs? Write a middleware.  
+Need OpenTelemetry spans? Drop in an interceptor.  
+Curious about WASM UDFs? Fork and go wild.  
+Hatch is scaffolding, not a silo.
+
+---
+
 ## 🚀 Quick Start
 
 ### From Source
 
 ```bash
-go install github.com/TFMV/flight/cmd/flight@latest
-flight serve --config ./config.yaml
+go install github.com/TFMV/hatch/cmd/server@latest
+hatch serve --config ./config.yaml
 ```
 
 ### Sample Query
@@ -77,7 +107,7 @@ tracing:
 Then:
 
 ```bash
-flight serve --config ./config.yaml
+hatch serve --config ./config.yaml
 ```
 
 ---
