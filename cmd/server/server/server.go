@@ -17,6 +17,7 @@ import (
 
 	"github.com/TFMV/flight/cmd/server/config"
 	"github.com/TFMV/flight/cmd/server/middleware"
+	"github.com/TFMV/flight/pkg/cache"
 	"github.com/TFMV/flight/pkg/handlers"
 	"github.com/TFMV/flight/pkg/infrastructure"
 	"github.com/TFMV/flight/pkg/infrastructure/pool"
@@ -32,10 +33,12 @@ type FlightSQLServer struct {
 	config *config.Config
 
 	// Core components
-	pool      pool.ConnectionPool
-	allocator memory.Allocator
-	logger    zerolog.Logger
-	metrics   MetricsCollector
+	pool        pool.ConnectionPool
+	allocator   memory.Allocator
+	logger      zerolog.Logger
+	metrics     MetricsCollector
+	cache       cache.Cache
+	cacheKeyGen cache.CacheKeyGenerator
 
 	// Handlers
 	queryHandler             handlers.QueryHandler
@@ -97,6 +100,15 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 	// Create allocator
 	allocator := memory.NewGoAllocator()
 
+	// Create cache
+	cacheCfg := cache.DefaultConfig().
+		WithMaxSize(cfg.Cache.MaxSize).
+		WithTTL(cfg.Cache.TTL).
+		WithAllocator(allocator).
+		WithStats(cfg.Cache.EnableStats)
+	cache := cache.NewMemoryCache(cacheCfg.MaxSize, cacheCfg.Allocator)
+	cacheKeyGen := &cache.DefaultCacheKeyGenerator{}
+
 	// Create SQL info provider
 	sqlInfoProvider := infrastructure.NewSQLInfoProvider(allocator)
 
@@ -150,6 +162,8 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		allocator:                allocator,
 		logger:                   logger,
 		metrics:                  metrics,
+		cache:                    cache,
+		cacheKeyGen:              cacheKeyGen,
 		queryHandler:             queryHandler,
 		metadataHandler:          metadataHandler,
 		transactionHandler:       transactionHandler,
@@ -216,6 +230,11 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 	// Stop transaction service if it has a Stop method
 	if stopper, ok := s.transactionService.(interface{ Stop() }); ok {
 		stopper.Stop()
+	}
+
+	// Close cache
+	if err := s.cache.Close(); err != nil {
+		s.logger.Error().Err(err).Msg("Error closing cache")
 	}
 
 	// Close connection pool

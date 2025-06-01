@@ -254,5 +254,4 @@ type preparedStatement struct {
 	model     *models.PreparedStatement
 	stmt      *sql.Stmt // Optional: actual prepared statement
 	createdAt time.Time
-	mu        sync.RWMutex
 }

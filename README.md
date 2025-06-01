@@ -1,4 +1,4 @@
-# 🦆 Hatch
+# 🐣 Hatch
 
 *Zero‑copy analytics, delivered at Mach Arrow.*
 
@@ -85,21 +85,63 @@ flight serve --config ./config.yaml
 ## 🧬 Architecture (bird’s‑eye)
 
 ```mermaid
+%% DuckDB Flight SQL Server – Layered Architecture
 flowchart LR
-    subgraph Client
-        A[Flight SQL Client]
+    %% ── LAYER STYLES ──────────────────────────────────────────────
+    classDef clientLayer  fill:#e0f7fa,stroke:#0d47a1,stroke-width:1px,color:#0d47a1
+    classDef serverLayer  fill:#ede7f6,stroke:#4527a0,stroke-width:1px,color:#4527a0
+    classDef serviceLayer fill:#fff3e0,stroke:#ef6c00,stroke-width:1px,color:#ef6c00
+    classDef infraLayer   fill:#f1f8e9,stroke:#2e7d32,stroke-width:1px,color:#2e7d32
+    classDef dbLayer      fill:#eceff1,stroke:#37474f,stroke-width:1px,color:#37474f
+    classDef accent       stroke-dasharray:4 2
+    linkStyle default stroke-width:1px,stroke:#546e7a
+
+    %% ── CLIENT LAYER ──────────────────────────────────────────────
+    subgraph "Client Layer"
+        direction TB
+        CLIENT["Flight SQL<br/>Client"]:::clientLayer
     end
-    subgraph Server
-        B[FlightServer]\n(gRPC)
-        B --> C[Middleware⟶Auth/Stats/Trace]
-        C --> D[FlightSQL Handler]
-        D --> E[Query Svc]
-        D --> F[Metadata Svc]
-        D --> G[Txn Svc]
-        E & F & G --> H[DuckDB Connection Pool]
-        H --> I[(DuckDB + Arrow Ext)]
+
+    %% ── SERVER LAYER ──────────────────────────────────────────────
+    subgraph "Server Layer (gRPC)"
+        direction TB
+        FS["FlightServer<br/>(gRPC)"]:::serverLayer
+        MW["Middleware<br/>Auth / Metrics / Tracing"]:::serverLayer
+        FS --> MW
     end
-    A --> B
+
+    %% ── API / SERVICE LAYER ───────────────────────────────────────
+    subgraph "API / Service Layer"
+        direction TB
+        HANDLER["FlightSQL Handler"]:::serviceLayer
+        QSRV["Query Service"]:::serviceLayer
+        MSRV["Metadata Service"]:::serviceLayer
+        TSRV["Txn Service"]:::serviceLayer
+        HANDLER --> QSRV
+        HANDLER --> MSRV
+        HANDLER --> TSRV
+    end
+
+    %% ── INFRASTRUCTURE LAYER ──────────────────────────────────────
+    subgraph "Infrastructure"
+        direction TB
+        POOL["DuckDB<br/>Connection Pool"]:::infraLayer
+    end
+
+    %% ── DATABASE LAYER ────────────────────────────────────────────
+    subgraph "Database"
+        direction TB
+        DUCK["DuckDB<br/>+ Arrow Ext"]:::dbLayer
+    end
+
+    %% ── FLOW CONNECTIONS ──────────────────────────────────────────
+    CLIENT --> FS
+    MW --> HANDLER
+    QSRV & MSRV & TSRV --> POOL
+    POOL --> DUCK
+
+    %% ── ACCENT HIGHLIGHT ─────────────────────────────────────────
+    class HANDLER accent
 ```
 
 ---

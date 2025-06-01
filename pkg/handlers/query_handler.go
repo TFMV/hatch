@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/google/uuid"
@@ -224,109 +223,4 @@ func truncateQuery(query string) string {
 		return query
 	}
 	return query[:maxLen] + "..."
-}
-
-// createRecordBatchStream creates a stream of record batches from a query result.
-func (h *queryHandler) createRecordBatchStream(ctx context.Context, result *models.QueryResult) <-chan flight.StreamChunk {
-	chunks := make(chan flight.StreamChunk, 16)
-
-	go func() {
-		defer close(chunks)
-
-		builder := array.NewRecordBuilder(h.allocator, result.Schema)
-		defer builder.Release()
-
-		batchSize := 1024
-		currentSize := 0
-
-		for record := range result.Records {
-			// Check context
-			if ctx.Err() != nil {
-				record.Release()
-				chunks <- flight.StreamChunk{Err: ctx.Err()}
-				return
-			}
-
-			// Accumulate records until batch size
-			for i := int64(0); i < record.NumRows(); i++ {
-				for j := 0; j < int(record.NumCols()); j++ {
-					col := record.Column(j)
-					if err := appendValueToBuilder(builder.Field(j), col, int(i)); err != nil {
-						record.Release()
-						chunks <- flight.StreamChunk{Err: err}
-						return
-					}
-				}
-				currentSize++
-
-				// Send batch if full
-				if currentSize >= batchSize {
-					batch := builder.NewRecord()
-					chunks <- flight.StreamChunk{Data: batch}
-					currentSize = 0
-				}
-			}
-
-			record.Release()
-		}
-
-		// Send remaining records
-		if currentSize > 0 {
-			batch := builder.NewRecord()
-			chunks <- flight.StreamChunk{Data: batch}
-		}
-	}()
-
-	return chunks
-}
-
-// appendValueToBuilder appends a value from an array to a builder.
-func appendValueToBuilder(builder array.Builder, arr arrow.Array, idx int) error {
-	if arr.IsNull(idx) {
-		builder.AppendNull()
-		return nil
-	}
-
-	switch b := builder.(type) {
-	case *array.BooleanBuilder:
-		b.Append(arr.(*array.Boolean).Value(idx))
-	case *array.Int8Builder:
-		b.Append(arr.(*array.Int8).Value(idx))
-	case *array.Int16Builder:
-		b.Append(arr.(*array.Int16).Value(idx))
-	case *array.Int32Builder:
-		b.Append(arr.(*array.Int32).Value(idx))
-	case *array.Int64Builder:
-		b.Append(arr.(*array.Int64).Value(idx))
-	case *array.Uint8Builder:
-		b.Append(arr.(*array.Uint8).Value(idx))
-	case *array.Uint16Builder:
-		b.Append(arr.(*array.Uint16).Value(idx))
-	case *array.Uint32Builder:
-		b.Append(arr.(*array.Uint32).Value(idx))
-	case *array.Uint64Builder:
-		b.Append(arr.(*array.Uint64).Value(idx))
-	case *array.Float32Builder:
-		b.Append(arr.(*array.Float32).Value(idx))
-	case *array.Float64Builder:
-		b.Append(arr.(*array.Float64).Value(idx))
-	case *array.StringBuilder:
-		b.Append(arr.(*array.String).Value(idx))
-	case *array.BinaryBuilder:
-		b.Append(arr.(*array.Binary).Value(idx))
-	case *array.TimestampBuilder:
-		b.Append(arr.(*array.Timestamp).Value(idx))
-	case *array.Date32Builder:
-		b.Append(arr.(*array.Date32).Value(idx))
-	case *array.Date64Builder:
-		b.Append(arr.(*array.Date64).Value(idx))
-	case *array.Time32Builder:
-		b.Append(arr.(*array.Time32).Value(idx))
-	case *array.Time64Builder:
-		b.Append(arr.(*array.Time64).Value(idx))
-	default:
-		return fmt.Errorf("unsupported builder type: %T", builder)
-	}
-
-	return nil
 }

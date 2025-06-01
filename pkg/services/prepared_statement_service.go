@@ -3,7 +3,6 @@ package services
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,7 +18,6 @@ type preparedStatementService struct {
 	txnService TransactionService
 	logger     Logger
 	metrics    MetricsCollector
-	mu         sync.RWMutex
 }
 
 // NewPreparedStatementService creates a new prepared statement service.
