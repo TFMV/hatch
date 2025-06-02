@@ -49,6 +49,7 @@ type PreparedStatementService interface {
 	ExecuteQuery(ctx context.Context, handle string, params [][]interface{}) (*models.QueryResult, error)
 	ExecuteUpdate(ctx context.Context, handle string, params [][]interface{}) (*models.UpdateResult, error)
 	List(ctx context.Context, transactionID string) ([]*models.PreparedStatement, error)
+	SetParameters(ctx context.Context, handle string, params [][]interface{}) error
 }
 
 // Logger defines logging interface.

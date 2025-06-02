@@ -8,10 +8,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/TFMV/flight/pkg/errors"
 	"github.com/TFMV/flight/pkg/models"
 	"github.com/TFMV/flight/pkg/services"
+	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 )
 
 // queryHandler implements QueryHandler interface.
@@ -132,42 +134,51 @@ func (h *queryHandler) ExecuteUpdate(ctx context.Context, query string, transact
 }
 
 // GetFlightInfo returns flight information for a statement.
-func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight.FlightInfo, error) {
-	timer := h.metrics.StartTimer("handler_get_flight_info")
-	defer timer.Stop()
+func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flightpb.FlightInfo, error) {
+	ttimer := h.metrics.StartTimer("handler_get_flight_info")
+	defer ttimer.Stop()
 
 	h.logger.Debug("Getting flight info", "query", truncateQuery(query))
 
-	// Validate query to get schema
 	if err := h.queryService.ValidateQuery(ctx, query); err != nil {
 		h.metrics.IncrementCounter("handler_validation_errors")
 		return nil, h.mapServiceError(err)
 	}
 
-	// For now, create a minimal FlightInfo
-	// In a real implementation, we would analyze the query to provide accurate schema
-	ticket := &flight.Ticket{
+	// Create a ticket where the ticket bytes are the raw query string.
+	// This is to work around an apparent issue in the DoGet handler
+	// which seems to treat ticket bytes directly as the query string.
+	ticket := &flightpb.Ticket{
 		Ticket: []byte(query),
 	}
 
-	endpoint := &flight.FlightEndpoint{
-		Ticket: ticket,
-		// In a distributed system, we would include location information
-		Location: []*flight.Location{},
+	endpoint := &flightpb.FlightEndpoint{
+		Ticket:   ticket,
+		Location: []*flightpb.Location{},
 	}
 
-	// Create a descriptor for the query
-	descriptor := &flight.FlightDescriptor{
-		Type: flight.DescriptorCMD,
-		Cmd:  []byte(query),
+	descriptor := &flightpb.FlightDescriptor{
+		Type: flightpb.FlightDescriptor_CMD,
+		// Cmd field will be set below with CommandStatementQuery
 	}
 
-	info := &flight.FlightInfo{
+	cmdPayload := &flightpb.CommandStatementQuery{
+		Query: query,
+	}
+	cmdBytes, err := proto.Marshal(cmdPayload)
+	if err != nil {
+		h.logger.Error("Failed to marshal CommandStatementQuery", "error", err)
+		h.metrics.IncrementCounter("handler_internal_errors")
+		return nil, errors.New(errors.CodeInternal, fmt.Sprintf("failed to marshal command payload: %v", err))
+	}
+	descriptor.Cmd = cmdBytes
+
+	info := &flightpb.FlightInfo{
+		Schema:           nil,
 		FlightDescriptor: descriptor,
-		Endpoint:         []*flight.FlightEndpoint{endpoint},
-		TotalRecords:     -1, // Unknown until execution
-		TotalBytes:       -1, // Unknown until execution
-		// Schema would be set if we could determine it without execution
+		Endpoint:         []*flightpb.FlightEndpoint{endpoint},
+		TotalRecords:     -1,
+		TotalBytes:       -1,
 	}
 
 	h.metrics.IncrementCounter("handler_flight_info_created")
@@ -222,4 +233,57 @@ func truncateQuery(query string) string {
 		return query
 	}
 	return query[:maxLen] + "..."
+}
+
+// ExecuteQueryAndStream executes a query and returns its schema and a channel of StreamChunks.
+func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := h.metrics.StartTimer("handler_execute_query_and_stream")
+	defer timer.Stop()
+
+	h.logger.Debug("Executing query for streaming", "query", truncateQuery(query))
+
+	req := &models.QueryRequest{
+		Query: query,
+		// TransactionID can be added if necessary from context or other means
+	}
+	queryResult, err := h.queryService.ExecuteQuery(ctx, req)
+	if err != nil {
+		h.logger.Error("Failed to execute query for streaming", "error", err, "query", truncateQuery(query))
+		return nil, nil, h.mapServiceError(err)
+	}
+
+	if queryResult.Schema == nil {
+		h.metrics.IncrementCounter("handler_query_no_schema")
+		return nil, nil, errors.New(errors.CodeInternal, "query executed but returned no schema")
+	}
+
+	outCh := make(chan flight.StreamChunk) // Unbuffered, or buffered if a small number of records is typical
+
+	go func() {
+		defer close(outCh)
+
+		// queryResult.Records is <-chan arrow.Record
+		for record := range queryResult.Records { // Corrected loop for channel
+			currentRecord := record       // Capture range variable for the goroutine
+			defer currentRecord.Release() // Release each record after processing
+
+			if currentRecord != nil && currentRecord.NumRows() > 0 {
+				// Send the chunk
+				select {
+				case outCh <- flight.StreamChunk{Data: currentRecord}: // Send the arrow.Record directly
+					h.logger.Debug("Sent record chunk to stream", "rows", currentRecord.NumRows())
+				case <-ctx.Done():
+					h.logger.Info("Context cancelled during chunk send", "error", ctx.Err())
+					return
+				}
+			} else {
+				h.logger.Debug("Query record is nil or empty, skipping stream send")
+			}
+		}
+		// After the loop, all records from the channel have been processed or the channel was closed.
+		h.logger.Debug("Finished processing records channel for streaming")
+	}()
+
+	h.metrics.IncrementCounter("handler_query_stream_started")
+	return queryResult.Schema, outCh, nil
 }

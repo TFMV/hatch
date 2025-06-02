@@ -257,6 +257,40 @@ func (h *preparedStatementHandler) GetParameterSchema(ctx context.Context, handl
 	return stmt.ParameterSchema, nil
 }
 
+// SetParameters sets/binds parameters for a prepared statement.
+func (h *preparedStatementHandler) SetParameters(ctx context.Context, handle string, params arrow.Record) error {
+	timer := h.metrics.StartTimer("handler_prepared_statement_set_parameters")
+	defer timer.Stop()
+
+	h.logger.Debug("Setting parameters for prepared statement", "handle", handle)
+
+	if handle == "" {
+		h.metrics.IncrementCounter("handler_prepared_statement_invalid_handle")
+		return fmt.Errorf("invalid prepared statement handle")
+	}
+
+	// Convert Arrow record to parameter values
+	paramValues, err := h.extractParameters(params)
+	if err != nil {
+		// params record is released by extractParameters if it creates it, or by caller if passed in.
+		// Here, params is passed in, so the caller (DoPutPreparedStatementQuery) should release it.
+		h.metrics.IncrementCounter("handler_prepared_statement_parameter_errors")
+		return fmt.Errorf("failed to extract parameters: %w", err)
+	}
+
+	// Call service to set parameters
+	if err := h.preparedStatementService.SetParameters(ctx, handle, paramValues); err != nil {
+		h.metrics.IncrementCounter("handler_prepared_statement_set_parameters_errors")
+		h.logger.Error("Failed to set parameters for prepared statement", "error", err, "handle", handle)
+		return fmt.Errorf("failed to set parameters for prepared statement: %w", err)
+	}
+
+	h.logger.Info("Parameters set for prepared statement", "handle", handle)
+	h.metrics.IncrementCounter("handler_prepared_statement_parameters_set")
+
+	return nil
+}
+
 // extractParameters extracts parameter values from an Arrow record.
 func (h *preparedStatementHandler) extractParameters(params arrow.Record) ([][]interface{}, error) {
 	if params == nil {

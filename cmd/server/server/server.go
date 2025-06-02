@@ -7,13 +7,16 @@ import (
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	flightsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	pb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/TFMV/flight/cmd/server/config"
 	"github.com/TFMV/flight/cmd/server/middleware"
@@ -185,7 +188,7 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 
 // Register registers the Flight SQL server with a gRPC server.
 func (s *FlightSQLServer) Register(grpcServer *grpc.Server) {
-	srv := flightsql.NewFlightServer(&s.BaseServer)
+	srv := flightsql.NewFlightServer(s)
 	flight.RegisterFlightServiceServer(grpcServer, srv)
 }
 
@@ -270,31 +273,24 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 	return info, nil
 }
 
-// DoGetStatement implements the FlightSQL interface.
+// DoGetStatement implements the FlightSQL interface for regular statements.
 func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.StatementQueryTicket) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	s.logger.Debug().Msg("DoGetStatement")
+	query := string(ticket.GetStatementHandle()) // The handle *is* the query string
+	s.logger.Debug().Str("query_from_handle", query).Msg("DoGetStatement")
 
-	// Extract the query handle from the ticket
-	handle := ticket.GetStatementHandle()
-
-	// TODO:For now, we'll execute the query directly from the handle
-	// In a production system, you might cache query results and retrieve them here
-	query := string(handle)
-
-	s.logger.Debug().Str("query", query).Msg("Executing statement from ticket")
-
-	// Execute the query using the query handler
-	schema, chunks, err := s.queryHandler.ExecuteStatement(ctx, query, "")
+	// Delegate to queryHandler to execute the query and get the stream
+	schema, stream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
+		// queryHandler.ExecuteQueryAndStream should map to gRPC status errors
 		return nil, nil, err
 	}
 
-	s.metrics.IncrementCounter("flight_queries_executed")
-	return schema, chunks, nil
+	s.metrics.IncrementCounter("flight_do_get_statement_success")
+	return schema, stream, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.
@@ -505,6 +501,159 @@ func (s *FlightSQLServer) CreatePreparedStatement(ctx context.Context, req fligh
 		DatasetSchema: schema,
 		// ParameterSchema would be set if we supported parameterized queries
 	}, nil
+}
+
+// GetFlightInfoPreparedStatement implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_prepared_statement")
+	defer timer.Stop()
+
+	s.logger.Debug().Str("handle", string(cmd.GetPreparedStatementHandle())).Msg("GetFlightInfoPreparedStatement")
+
+	schema, err := s.preparedStatementHandler.GetSchema(ctx, string(cmd.GetPreparedStatementHandle()))
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement")
+		return nil, err
+	}
+
+	// This is the command that gets wrapped in the ticket for GetFlightInfoPreparedStatement
+	preparedCmd := &pb.CommandPreparedStatementQuery{
+		PreparedStatementHandle: cmd.GetPreparedStatementHandle(),
+	}
+
+	ticketBytes, err := proto.Marshal(preparedCmd) // Marshal the command
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal CommandPreparedStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement")
+		return nil, status.Error(codes.Internal, "failed to marshal ticket command")
+	}
+
+	// The actual ticket for FlightInfo wraps these command bytes
+	// The descriptor's Cmd field should also contain these command bytes if it's a CMD type descriptor
+	// For simplicity, we are creating a ticket that directly contains the marshaled CommandPreparedStatementQuery.
+	// The gRPC server (flightSqlServer wrapper) will unmarshal this appropriately when DoGet is called.
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc, // Assuming desc is appropriately populated by caller or base
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: ticketBytes}, // This is correct, ticket bytes are the marshaled command
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+// DoGetPreparedStatement implements the FlightSQL interface.
+// The 'cmd' argument here is an instance that implements flightsql.PreparedStatementQuery,
+// which will be provided by the underlying flightSQL server wrapper after it unmarshals the ticket.
+func (s *FlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error) { // Corrected argument type to match interface
+	timer := s.metrics.StartTimer("flight_do_get_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle()) // Use the command's handle (from the interface method)
+	s.logger.Debug().Str("handle", handle).Msg("DoGetPreparedStatement")
+
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetPreparedStatement")
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
+	}
+
+	var boundParams arrow.Record
+	if paramSchema.NumFields() > 0 {
+		b := array.NewRecordBuilder(s.allocator, paramSchema)
+		defer b.Release()
+		boundParams = b.NewRecord()
+	} else {
+		boundParams = array.NewRecord(paramSchema, nil, 0)
+	}
+
+	schema, chunks, err := s.preparedStatementHandler.ExecuteQuery(ctx, handle, boundParams)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetPreparedStatement")
+		if boundParams != nil {
+			boundParams.Release()
+		}
+		return nil, nil, err
+	}
+
+	s.metrics.IncrementCounter("flight_prepared_statements_executed")
+	return schema, chunks, nil
+}
+
+// DoPutPreparedStatementQuery implements the FlightSQL interface.
+func (s *FlightSQLServer) DoPutPreparedStatementQuery(
+	ctx context.Context,
+	cmd flightsql.PreparedStatementQuery,
+	reader flight.MessageReader,
+	writer flight.MetadataWriter,
+) ([]byte, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	s.logger.Debug().Str("handle", handle).Msg("DoPutPreparedStatementQuery")
+
+	// Read the parameter record batch
+	record, err := reader.Read()
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to read parameter record: %v", err))
+	}
+	if record == nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
+		return nil, status.Error(codes.InvalidArgument, "received nil record for parameters")
+	}
+	defer record.Release()
+
+	// Set parameters in the handler
+	if err := s.preparedStatementHandler.SetParameters(ctx, handle, record); err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
+		return nil, err // Pass through error from handler
+	}
+
+	s.metrics.IncrementCounter("flight_do_put_prepared_statement_query_success")
+	// Currently, this implementation does not produce DatasetUpdateInfo.
+	// Return nil for the update info and nil for the error on success.
+	return nil, nil
+}
+
+// DoPutPreparedStatementUpdate implements the FlightSQL interface.
+func (s *FlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context, cmd flightsql.PreparedStatementUpdate, reader flight.MessageReader) (int64, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_update")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	s.logger.Debug().Str("handle", handle).Msg("DoPutPreparedStatementUpdate")
+
+	record, err := reader.Read()
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate")
+		return 0, status.Error(codes.Internal, fmt.Sprintf("failed to read parameter record: %v", err))
+	}
+
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		record.Release()
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate")
+		return 0, status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
+	}
+
+	if !record.Schema().Equal(paramSchema) {
+		record.Release()
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate")
+		return 0, status.Error(codes.InvalidArgument, "parameter schema mismatch")
+	}
+
+	rowsAffected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, handle, record)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate")
+		return 0, err
+	}
+
+	s.metrics.RecordHistogram("flight_prepared_statement_update_rows", float64(rowsAffected))
+	return rowsAffected, nil
 }
 
 // ClosePreparedStatement implements the FlightSQL interface.

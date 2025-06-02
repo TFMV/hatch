@@ -9,12 +9,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/TFMV/flight/pkg/cache"
 	"github.com/TFMV/flight/pkg/handlers"
 	"github.com/TFMV/flight/pkg/infrastructure/converter"
+	"github.com/TFMV/flight/pkg/infrastructure/metrics"
 	"github.com/TFMV/flight/pkg/infrastructure/pool"
 )
 
@@ -30,6 +32,8 @@ type FlightSQLServer struct {
 	allocator                memory.Allocator
 	cache                    cache.Cache
 	cacheKeyGen              cache.CacheKeyGenerator
+	metrics                  metrics.Collector
+	logger                   zerolog.Logger
 }
 
 // NewFlightSQLServer creates a new Flight SQL server
@@ -43,6 +47,8 @@ func NewFlightSQLServer(
 	allocator memory.Allocator,
 	cache cache.Cache,
 	cacheKeyGen cache.CacheKeyGenerator,
+	metrics metrics.Collector,
+	logger zerolog.Logger,
 ) *FlightSQLServer {
 	return &FlightSQLServer{
 		queryHandler:             queryHandler,
@@ -54,6 +60,8 @@ func NewFlightSQLServer(
 		allocator:                allocator,
 		cache:                    cache,
 		cacheKeyGen:              cacheKeyGen,
+		metrics:                  metrics,
+		logger:                   logger,
 	}
 }
 
@@ -508,7 +516,7 @@ func (s *FlightSQLServer) DoGetPreparedStatement(
 		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
 	}
 
-	// Create an empty record for now since we don't have parameters
+	// Create an empty record for parameters if none were provided
 	record := array.NewRecord(paramSchema, nil, 0)
 	defer record.Release()
 
@@ -521,19 +529,40 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	cmd flightsql.PreparedStatementQuery,
 	reader flight.MessageReader,
 ) error {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
+	defer timer.Stop()
+
+	s.logger.Debug().Str("handle", string(cmd.GetPreparedStatementHandle())).Msg("DoPutPreparedStatementQuery")
+
 	// Read the parameter record batch
 	record, err := reader.Read()
 	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
 		return status.Error(codes.Internal, fmt.Sprintf("failed to read parameter record: %v", err))
 	}
 	defer record.Release()
 
-	// Execute the prepared statement
-	_, _, err = s.preparedStatementHandler.ExecuteQuery(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	// Get the parameter schema
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, string(cmd.GetPreparedStatementHandle()))
 	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
+		return status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
+	}
+
+	// Validate parameter schema matches
+	if !record.Schema().Equal(paramSchema) {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
+		return status.Error(codes.InvalidArgument, "parameter schema mismatch")
+	}
+
+	// Execute the prepared statement with parameters
+	_, err = s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
 		return status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
 	}
 
+	s.metrics.IncrementCounter("flight_prepared_statements_executed")
 	return nil
 }
 

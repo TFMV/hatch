@@ -44,15 +44,16 @@ type UpdateResult struct {
 
 // PreparedStatement represents a prepared SQL statement.
 type PreparedStatement struct {
-	Handle            string        `json:"handle"`
-	Query             string        `json:"query"`
-	ParameterSchema   *arrow.Schema `json:"-"`
-	ResultSetSchema   *arrow.Schema `json:"-"`
-	CreatedAt         time.Time     `json:"created_at"`
-	LastUsedAt        time.Time     `json:"last_used_at"`
-	ExecutionCount    int64         `json:"execution_count"`
-	TransactionID     string        `json:"transaction_id,omitempty"`
-	IsResultSetUpdate bool          `json:"is_result_set_update"`
+	Handle            string          `json:"handle"`
+	Query             string          `json:"query"`
+	ParameterSchema   *arrow.Schema   `json:"-"`
+	ResultSetSchema   *arrow.Schema   `json:"-"`
+	BoundParameters   [][]interface{} `json:"-"`
+	CreatedAt         time.Time       `json:"created_at"`
+	LastUsedAt        time.Time       `json:"last_used_at"`
+	ExecutionCount    int64           `json:"execution_count"`
+	TransactionID     string          `json:"transaction_id,omitempty"`
+	IsResultSetUpdate bool            `json:"is_result_set_update"`
 }
 
 // TransactionOptions represents options for creating a transaction.
