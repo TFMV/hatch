@@ -78,11 +78,35 @@ func (s *preparedStatementService) Create(ctx context.Context, query string, tra
 		// Count the number of parameters
 		paramCount := strings.Count(query, "?")
 		fields := make([]arrow.Field, paramCount)
+
+		// Try to infer parameter types from the query
+		// This is a simple implementation - in a real system, you'd want to use a proper SQL parser
+		queryUpper := strings.ToUpper(query)
+		if strings.Contains(queryUpper, "INSERT INTO") {
+			// For INSERT queries, try to infer types from the column list
+			startIdx := strings.Index(queryUpper, "(")
+			endIdx := strings.Index(queryUpper, ")")
+			if startIdx > 0 && endIdx > startIdx {
+				columns := strings.Split(query[startIdx+1:endIdx], ",")
+				for i := 0; i < paramCount && i < len(columns); i++ {
+					colName := strings.TrimSpace(columns[i])
+					fields[i] = arrow.Field{
+						Name:     fmt.Sprintf("param%d", i+1),
+						Type:     inferTypeFromColumnName(colName),
+						Nullable: true,
+					}
+				}
+			}
+		}
+
+		// For any remaining fields or if we couldn't infer types, use default types
 		for i := 0; i < paramCount; i++ {
-			fields[i] = arrow.Field{
-				Name:     fmt.Sprintf("param%d", i+1),
-				Type:     arrow.PrimitiveTypes.Int64, // Default to Int64, will be coerced by DuckDB
-				Nullable: true,
+			if fields[i].Type == nil {
+				fields[i] = arrow.Field{
+					Name:     fmt.Sprintf("param%d", i+1),
+					Type:     arrow.PrimitiveTypes.Int64,
+					Nullable: true,
+				}
 			}
 		}
 		paramSchema = arrow.NewSchema(fields, nil)
@@ -117,6 +141,21 @@ func (s *preparedStatementService) Create(ctx context.Context, query string, tra
 		"has_parameters", paramSchema != nil)
 
 	return stmt, nil
+}
+
+// inferTypeFromColumnName tries to infer the Arrow type from a column name
+func inferTypeFromColumnName(colName string) arrow.DataType {
+	colName = strings.ToUpper(colName)
+	switch {
+	case strings.Contains(colName, "ID") || strings.Contains(colName, "COUNT"):
+		return arrow.PrimitiveTypes.Int64
+	case strings.Contains(colName, "NAME") || strings.Contains(colName, "STRING") || strings.Contains(colName, "TEXT"):
+		return arrow.BinaryTypes.String
+	case strings.Contains(colName, "FLOAT") || strings.Contains(colName, "DOUBLE") || strings.Contains(colName, "DECIMAL"):
+		return arrow.PrimitiveTypes.Float64
+	default:
+		return arrow.PrimitiveTypes.Int64 // Default to Int64
+	}
 }
 
 // Get retrieves a prepared statement by handle.
