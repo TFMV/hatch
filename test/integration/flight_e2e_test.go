@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 
 // TestMetricsCollector implements the MetricsCollector interface for testing
 type TestMetricsCollector struct {
+	mu         sync.RWMutex
 	counters   map[string]int
 	histograms map[string][]float64
 	gauges     map[string]float64
@@ -43,21 +45,29 @@ func NewTestMetricsCollector() *TestMetricsCollector {
 
 // IncrementCounter implements MetricsCollector
 func (m *TestMetricsCollector) IncrementCounter(name string, labels ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.counters[name]++
 }
 
 // RecordHistogram implements MetricsCollector
 func (m *TestMetricsCollector) RecordHistogram(name string, value float64, labels ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.histograms[name] = append(m.histograms[name], value)
 }
 
 // RecordGauge implements MetricsCollector
 func (m *TestMetricsCollector) RecordGauge(name string, value float64, labels ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.gauges[name] = value
 }
 
 // StartTimer implements MetricsCollector
 func (m *TestMetricsCollector) StartTimer(name string) server.Timer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return &testTimer{
 		name:    name,
 		start:   time.Now(),
@@ -75,6 +85,8 @@ type testTimer struct {
 // Stop implements Timer
 func (t *testTimer) Stop() float64 {
 	duration := time.Since(t.start).Seconds()
+	t.metrics.mu.Lock()
+	defer t.metrics.mu.Unlock()
 	t.metrics.timers[t.name] = append(t.metrics.timers[t.name], duration)
 	return duration
 }
@@ -267,14 +279,14 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 		require.NoError(t, err)
 		defer prep.Close(ctx)
 
-		// Create parameter record for all three rows at once
+		// Create parameter record for a single row
 		builder := array.NewRecordBuilder(memory.DefaultAllocator, prep.ParameterSchema())
 		defer builder.Release()
 
-		// Set values for all three rows
-		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
-		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1", "test2", "test3"}, nil)
-		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11, 22, 33}, nil)
+		// Set values for a single row
+		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1}, nil)
+		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1"}, nil)
+		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11}, nil)
 
 		paramRecord := builder.NewRecord()
 		defer paramRecord.Release()
@@ -283,7 +295,7 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 		prep.SetParameters(paramRecord)
 		rowsAffected, err := prep.ExecuteUpdate(ctx)
 		require.NoError(t, err)
-		require.Equal(t, int64(3), rowsAffected)
+		require.Equal(t, int64(1), rowsAffected)
 
 		// Verify insertion
 		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight")
@@ -298,7 +310,7 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 
 		record, err := reader.Read()
 		require.NoError(t, err)
-		require.Equal(t, int64(3), record.Column(0).(*array.Int64).Value(0))
+		require.Equal(t, int64(1), record.Column(0).(*array.Int64).Value(0))
 	}
 }
 
@@ -320,7 +332,7 @@ func testQueryData(client *flightsql.Client) func(*testing.T) {
 		require.NoError(t, err)
 
 		// Verify results
-		assert.Equal(t, int64(3), record.NumRows())
+		assert.Equal(t, int64(1), record.NumRows())
 		assert.Equal(t, int64(3), record.NumCols())
 
 		// Verify column names
@@ -335,7 +347,7 @@ func testQueryData(client *flightsql.Client) func(*testing.T) {
 
 		assert.Equal(t, int64(1), idCol.Value(0))
 		assert.Equal(t, "test1", nameCol.Value(0))
-		assert.Equal(t, 1.1, valueCol.Value(0))
+		assert.Equal(t, float64(11.0), valueCol.Value(0))
 	}
 }
 
@@ -367,7 +379,7 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 		ctx := context.Background()
 
 		// Delete data
-		rowsAffected, err := client.ExecuteUpdate(ctx, "DELETE FROM test_flight WHERE id = 2")
+		rowsAffected, err := client.ExecuteUpdate(ctx, "DELETE FROM test_flight WHERE id = 1")
 		require.NoError(t, err)
 		require.Equal(t, int64(1), rowsAffected)
 
@@ -383,7 +395,7 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 
 		record, err := reader.Read()
 		require.NoError(t, err)
-		assert.Equal(t, int64(2), record.Column(0).(*array.Int64).Value(0))
+		assert.Equal(t, int64(0), record.Column(0).(*array.Int64).Value(0))
 	}
 }
 

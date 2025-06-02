@@ -1,16 +1,17 @@
 # 🐣 Hatch
 
-*Zero‑copy analytics, delivered at Mach Arrow.*
+*Zero‑copy analytics, delivered at Mach Arrow.*
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/TFMV/flight/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/flight/actions/workflows/ci.yml)
 
 > This project is in early development. Please feel free to experiment. Any contributions are appreciated.
 
 ## The Big Idea
 
-A great engine shouldn’t be gated by heavyweight infra.
-Hatch keeps DuckDB’s magic small, open, and composable—so your data can fly wherever you need it.
+A great engine shouldn't be gated by heavyweight infra.
+Hatch keeps DuckDB's magic small, open, and composable—so your data can fly wherever you need it.
 
 Spin up. Query. Stream. Done.
 
@@ -22,12 +23,12 @@ Embedded analytics just broke orbit.
 
 ### 1. Arrow‑Native Networking Is Inevitable  
 
-Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. DuckDB already “speaks Arrow” internally—Hatch lets it **broadcast**.
+Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. DuckDB already "speaks Arrow" internally—Hatch lets it **broadcast**.
 
 ### 2. Self‑Hosted ≠ Heavyweight  
 
 Options today: embed DuckDB yourself, bolt it onto Python/Java web servers, or go proprietary.  
-Hatch offers a **third way**: a 10 MB server that does one thing—serve SQL over Flight.
+Hatch offers a **third way**: a 10 MB server that does one thing—serve SQL over Flight.
 
 ### 3. Pipelines Need Lightweight Nodes  
 
@@ -42,16 +43,16 @@ Hatch is scaffolding, not a silo.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start
 
-### From Source
+### From Source
 
 ```bash
 go install github.com/TFMV/hatch/cmd/server@latest
 hatch serve --config ./config.yaml
 ```
 
-### Sample Query
+### Sample Query
 
 ```go
 client, _ := flightsql.NewClient("localhost:32010")
@@ -64,7 +65,7 @@ for rdr.Next() { fmt.Println(rdr.Record()) }
 
 ---
 
-## 🛠️ Configuration
+## 🛠️ Configuration
 
 Create a file `config.yaml` (all fields optional):
 
@@ -101,10 +102,10 @@ hatch serve --config ./config.yaml
 
 ---
 
-## 🧬 Architecture (bird’s‑eye)
+## 🧬 Architecture (bird's‑eye)
 
 ```mermaid
-%% DuckDB Flight SQL Server – Layered Architecture
+%% DuckDB Flight SQL Server – Layered Architecture
 flowchart LR
     %% ── LAYER STYLES ──────────────────────────────────────────────
     classDef clientLayer  fill:#e0f7fa,stroke:#0d47a1,stroke-width:1px,color:#0d47a1
@@ -118,7 +119,7 @@ flowchart LR
     %% ── CLIENT LAYER ──────────────────────────────────────────────
     subgraph "Client Layer"
         direction TB
-        CLIENT["Flight SQL<br/>Client"]:::clientLayer
+        CLIENT["Flight SQL<br/>Client"]:::clientLayer
     end
 
     %% ── SERVER LAYER ──────────────────────────────────────────────
@@ -132,10 +133,10 @@ flowchart LR
     %% ── API / SERVICE LAYER ───────────────────────────────────────
     subgraph "API / Service Layer"
         direction TB
-        HANDLER["FlightSQL Handler"]:::serviceLayer
-        QSRV["Query Service"]:::serviceLayer
-        MSRV["Metadata Service"]:::serviceLayer
-        TSRV["Txn Service"]:::serviceLayer
+        HANDLER["FlightSQL Handler"]:::serviceLayer
+        QSRV["Query Service"]:::serviceLayer
+        MSRV["Metadata Service"]:::serviceLayer
+        TSRV["Txn Service"]:::serviceLayer
         HANDLER --> QSRV
         HANDLER --> MSRV
         HANDLER --> TSRV
@@ -144,13 +145,13 @@ flowchart LR
     %% ── INFRASTRUCTURE LAYER ──────────────────────────────────────
     subgraph "Infrastructure"
         direction TB
-        POOL["DuckDB<br/>Connection Pool"]:::infraLayer
+        POOL["DuckDB<br/>Connection Pool"]:::infraLayer
     end
 
     %% ── DATABASE LAYER ────────────────────────────────────────────
     subgraph "Database"
         direction TB
-        DUCK["DuckDB<br/>+ Arrow Ext"]:::dbLayer
+        DUCK["DuckDB<br/>+ Arrow Ext"]:::dbLayer
     end
 
     %% ── FLOW CONNECTIONS ──────────────────────────────────────────
@@ -165,7 +166,7 @@ flowchart LR
 
 ---
 
-## 📚 Usage Patterns
+## 📚 Usage Patterns
 
 * **Ad‑hoc Analytics:** Point Superset or Tableau at `grpc://host:32010` and run.
 * **Streaming Extracts:** Pipe result sets directly into Arrow Flight streams for ML features.
@@ -173,6 +174,6 @@ flowchart LR
 
 ---
 
-## 📄 License
+## 📄 License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.

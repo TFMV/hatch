@@ -152,7 +152,7 @@ func testDoPutCommandStatementUpdate(srv *TestServer, tableName string) func(*te
 			record := chunk.Data
 			require.NotNil(t, record, "received nil record")
 			if record.NumRows() > 0 {
-				require.Equal(t, 1, record.NumCols(), "expected 1 column for COUNT query")
+				require.Equal(t, int64(1), record.NumCols(), "expected 1 column for COUNT query")
 				countCol := record.Column(0)
 				require.NotNil(t, countCol, "count column is nil")
 				require.IsType(t, &array.Int64{}, countCol, "expected Int64 column for COUNT")

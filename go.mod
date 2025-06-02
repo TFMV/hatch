@@ -7,7 +7,6 @@ toolchain go1.24.3
 require (
 	github.com/apache/arrow-go/v18 v18.3.0
 	github.com/google/uuid v1.6.0
-	github.com/marcboeker/go-duckdb v1.8.5
 	github.com/marcboeker/go-duckdb/v2 v2.3.0
 	github.com/prometheus/client_golang v1.22.0
 	github.com/rs/zerolog v1.34.0

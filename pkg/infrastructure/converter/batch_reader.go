@@ -152,12 +152,9 @@ func (r *BatchReader) Record() arrow.Record {
 	// This prevents the BatchReader's internal r.record.Release() in the next
 	// r.Next() call from nilling out the columns of the record instance
 	// that the consumer (ExecuteQueryStream) has.
-	r.record.Retain() // Ensure r.record and its columns are valid for slicing.
+
+	// Create the slice - this will automatically retain the columns
 	newRecSlice := r.record.NewSlice(0, r.record.NumRows())
-	// Release the Retain made specifically for slicing.
-	// The BatchReader's main lifecycle for r.record (creation in Next, Release in subsequent Next)
-	// remains, but it won't affect newRecSlice's .columns field.
-	r.record.Release()
 
 	r.logger.Debug().
 		Int("slice_num_cols", int(newRecSlice.NumCols())).
