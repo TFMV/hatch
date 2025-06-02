@@ -145,11 +145,20 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 		return nil, h.mapServiceError(err)
 	}
 
-	// Create a ticket where the ticket bytes are the raw query string.
-	// This is to work around an apparent issue in the DoGet handler
-	// which seems to treat ticket bytes directly as the query string.
+	// Create a TicketStatementQuery protobuf message
+	statementQueryTicketProto := &flightpb.TicketStatementQuery{
+		StatementHandle: []byte(query),
+	}
+	// Marshal the TicketStatementQuery for the ticket's content
+	marshalledTicketStatementQueryBytes, err := proto.Marshal(statementQueryTicketProto)
+	if err != nil {
+		h.logger.Error("Failed to marshal TicketStatementQuery", "error", err)
+		h.metrics.IncrementCounter("handler_internal_errors")
+		return nil, errors.New(errors.CodeInternal, fmt.Sprintf("failed to marshal ticket statement query: %v", err))
+	}
+
 	ticket := &flightpb.Ticket{
-		Ticket: []byte(query),
+		Ticket: marshalledTicketStatementQueryBytes,
 	}
 
 	endpoint := &flightpb.FlightEndpoint{
