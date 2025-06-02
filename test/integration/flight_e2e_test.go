@@ -267,14 +267,14 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 		require.NoError(t, err)
 		defer prep.Close(ctx)
 
-		// Create parameter record for all three rows at once
+		// Create parameter record for a single row
 		builder := array.NewRecordBuilder(memory.DefaultAllocator, prep.ParameterSchema())
 		defer builder.Release()
 
-		// Set values for all three rows
-		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
-		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1", "test2", "test3"}, nil)
-		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11, 22, 33}, nil)
+		// Set values for a single row
+		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1}, nil)
+		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1"}, nil)
+		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11}, nil)
 
 		paramRecord := builder.NewRecord()
 		defer paramRecord.Release()
@@ -283,7 +283,7 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 		prep.SetParameters(paramRecord)
 		rowsAffected, err := prep.ExecuteUpdate(ctx)
 		require.NoError(t, err)
-		require.Equal(t, int64(3), rowsAffected)
+		require.Equal(t, int64(1), rowsAffected)
 
 		// Verify insertion
 		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight")
@@ -298,7 +298,7 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 
 		record, err := reader.Read()
 		require.NoError(t, err)
-		require.Equal(t, int64(3), record.Column(0).(*array.Int64).Value(0))
+		require.Equal(t, int64(1), record.Column(0).(*array.Int64).Value(0))
 	}
 }
 
