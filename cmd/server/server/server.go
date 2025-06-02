@@ -269,21 +269,15 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		return nil, err
 	}
 
-	// Create a TicketStatementQuery protobuf message
-	ticketProto := &flightpb.TicketStatementQuery{
-		StatementHandle: []byte(cmd.GetQuery()),
-	}
-
-	// Marshal the TicketStatementQuery for the ticket's content
-	ticketBytes, err := proto.Marshal(ticketProto)
+	// Create ticket using the canonical helper
+	ticketBytes, err := flightsql.CreateStatementQueryTicket([]byte(cmd.GetQuery()))
 	if err != nil {
-		s.logger.Error().Err(err).Msg("Failed to marshal TicketStatementQuery")
+		s.logger.Error().Err(err).Msg("failed to create statement ticket")
 		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement")
-		return nil, status.Error(codes.Internal, "failed to marshal ticket")
+		return nil, status.Error(codes.Internal, "failed to create ticket")
 	}
 
-	// Create a new FlightInfo with the schema and ticket
-	return &flight.FlightInfo{
+	flightInfo := &flight.FlightInfo{
 		Schema:           info.Schema,
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
@@ -291,7 +285,10 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
-	}, nil
+	}
+
+	s.metrics.IncrementCounter("flight_get_info_statement_success")
+	return flightInfo, nil
 }
 
 // DoGetStatement implements the FlightSQL interface for regular statements.
@@ -299,19 +296,10 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	// Unmarshal the ticket bytes into a TicketStatementQuery
-	var ticketProto flightpb.TicketStatementQuery
-	if err := proto.Unmarshal(ticket.GetStatementHandle(), &ticketProto); err != nil {
-		s.logger.Error().Err(err).Msg("Failed to unmarshal TicketStatementQuery")
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
-		return nil, nil, status.Error(codes.Internal, "failed to unmarshal ticket")
-	}
-
-	// Get the query from the ticket
-	query := string(ticketProto.StatementHandle)
+	// The statement handle contains the SQL query
+	query := string(ticket.GetStatementHandle())
 	s.logger.Debug().Str("query", query).Msg("DoGetStatement")
 
-	// Execute the query
 	schema, stream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
