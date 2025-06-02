@@ -286,7 +286,7 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 		// Set values for a single row
 		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1}, nil)
 		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1"}, nil)
-		builder.Field(2).(*array.Float64Builder).AppendValues([]float64{1.1}, nil)
+		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11}, nil)
 
 		paramRecord := builder.NewRecord()
 		defer paramRecord.Release()
@@ -347,7 +347,7 @@ func testQueryData(client *flightsql.Client) func(*testing.T) {
 
 		assert.Equal(t, int64(1), idCol.Value(0))
 		assert.Equal(t, "test1", nameCol.Value(0))
-		assert.Equal(t, 1.1, valueCol.Value(0))
+		assert.Equal(t, float64(11.0), valueCol.Value(0))
 	}
 }
 
