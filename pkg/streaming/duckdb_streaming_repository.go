@@ -187,9 +187,9 @@ func (r *duckDBStreamingRepository) IngestStream(ctx context.Context, transactio
 				rec.Release() // Release before returning error
 				return totalRows, fmt.Errorf("appender failed to append row %d of batch: %w. Appender close status: %v", i, err, appenderCloseErr)
 			}
-			// totalRows should be incremented per row successfully appended
+			totalRows++ // Correctly increment after each successful row append
 		}
-		totalRows += rec.NumRows() // This was the original logic, assuming AppendArrowRecord.
+		// totalRows += rec.NumRows() // This was the original logic, assuming AppendArrowRecord.
 		// If AppendRow is used, totalRows should be incremented inside the inner loop after a successful AppendRow,
 		// or simply use rec.NumRows() after the inner loop if all rows in the batch are processed.
 		// For now, keeping it similar to original structure, but this counts the whole batch even if a row fails.
