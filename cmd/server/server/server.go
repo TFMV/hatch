@@ -296,8 +296,16 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	// The statement handle contains the SQL query
-	query := string(ticket.GetStatementHandle())
+	// Extract the query from the ticket using the helper function
+	flightTicket := &flight.Ticket{Ticket: ticket.GetStatementHandle()}
+	ticketQuery, err := flightsql.GetStatementQueryTicket(flightTicket)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to get statement query from ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
+		return nil, nil, status.Error(codes.Internal, "failed to get query from ticket")
+	}
+
+	query := string(ticketQuery.GetStatementHandle())
 	s.logger.Debug().Str("query", query).Msg("DoGetStatement")
 
 	schema, stream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
