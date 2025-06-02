@@ -3,14 +3,15 @@ package handlers
 
 import (
 	"context"
+	stdErrors "errors" // Standard library errors aliased
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/TFMV/flight/pkg/errors"
+	flightErrors "github.com/TFMV/flight/pkg/errors" // Custom errors aliased
 	"github.com/TFMV/flight/pkg/models"
 	"github.com/TFMV/flight/pkg/services"
 	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
@@ -66,7 +67,7 @@ func (h *queryHandler) ExecuteStatement(ctx context.Context, query string, trans
 	schema := result.Schema
 	if schema == nil {
 		h.metrics.IncrementCounter("handler_empty_schema")
-		return nil, nil, errors.New(errors.CodeInternal, "query returned no schema")
+		return nil, nil, flightErrors.New(flightErrors.CodeInternal, "query returned no schema")
 	}
 
 	// Create stream for results
@@ -145,54 +146,34 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 		return nil, h.mapServiceError(err)
 	}
 
-	// Create a TicketStatementQuery protobuf message
-	statementQueryTicketProto := &flightpb.TicketStatementQuery{
-		StatementHandle: []byte(query),
+	// Execute a dummy query to get the schema
+	req := &models.QueryRequest{
+		Query:   query,
+		MaxRows: 0, // We only need the schema
 	}
-	// Marshal the TicketStatementQuery for the ticket's content
-	marshalledTicketStatementQueryBytes, err := proto.Marshal(statementQueryTicketProto)
+	result, err := h.queryService.ExecuteQuery(ctx, req)
 	if err != nil {
-		h.logger.Error("Failed to marshal TicketStatementQuery", "error", err)
+		h.logger.Error("Failed to get schema", "error", err)
 		h.metrics.IncrementCounter("handler_internal_errors")
-		return nil, errors.New(errors.CodeInternal, fmt.Sprintf("failed to marshal ticket statement query: %v", err))
+		return nil, h.mapServiceError(err)
 	}
 
-	ticket := &flightpb.Ticket{
-		Ticket: marshalledTicketStatementQueryBytes,
-	}
-
-	endpoint := &flightpb.FlightEndpoint{
-		Ticket:   ticket,
-		Location: []*flightpb.Location{},
-	}
-
-	descriptor := &flightpb.FlightDescriptor{
-		Type: flightpb.FlightDescriptor_CMD,
-		// Cmd field will be set below with CommandStatementQuery
-	}
-
-	cmdPayload := &flightpb.CommandStatementQuery{
-		Query: query,
-	}
-	cmdBytes, err := proto.Marshal(cmdPayload)
-	if err != nil {
-		h.logger.Error("Failed to marshal CommandStatementQuery", "error", err)
+	// Get Arrow schema from result
+	schema := result.Schema
+	if schema == nil {
 		h.metrics.IncrementCounter("handler_internal_errors")
-		return nil, errors.New(errors.CodeInternal, fmt.Sprintf("failed to marshal command payload: %v", err))
-	}
-	descriptor.Cmd = cmdBytes
-
-	info := &flightpb.FlightInfo{
-		Schema:           nil,
-		FlightDescriptor: descriptor,
-		Endpoint:         []*flightpb.FlightEndpoint{endpoint},
-		TotalRecords:     -1,
-		TotalBytes:       -1,
+		return nil, h.mapServiceError(errors.New(errors.CodeInternal, "schema is nil"))
 	}
 
-	h.metrics.IncrementCounter("handler_flight_info_created")
-
-	return info, nil
+	// Create a FlightInfo with the schema
+	return &flightpb.FlightInfo{
+		Schema: flight.SerializeSchema(schema, h.allocator),
+		Endpoint: []*flightpb.FlightEndpoint{{
+			Ticket: &flightpb.Ticket{},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
 }
 
 // mapServiceError maps service errors to appropriate Flight errors.
@@ -201,37 +182,44 @@ func (h *queryHandler) mapServiceError(err error) error {
 		return nil
 	}
 
-	// Check if it's already a Flight error
-	if flightErr, ok := err.(*errors.FlightError); ok {
+	// Check if it's a FlightError
+	var flightErr *flightErrors.FlightError
+	if stdErrors.As(err, &flightErr) { // Use aliased standard errors for As
+		// Return a new error with just the message content from the FlightError.
+		// This avoids the gRPC layer trying to serialize FlightError.Details into a proto.Any
+		// if the client isn't equipped to handle custom proto detail types.
+		// The specific error code is implicitly mapped by gRPC status codes if this handler
+		// is called from a gRPC context that translates errors to statuses.
 		switch flightErr.Code {
-		case errors.CodeInvalidRequest:
-			return fmt.Errorf("invalid argument: %w", flightErr)
-		case errors.CodeNotFound:
-			return fmt.Errorf("not found: %w", flightErr)
-		case errors.CodeAlreadyExists:
-			return fmt.Errorf("already exists: %w", flightErr)
-		case errors.CodeUnauthorized:
-			return fmt.Errorf("unauthenticated: %w", flightErr)
-		case errors.CodePermissionDenied:
-			return fmt.Errorf("permission denied: %w", flightErr)
-		case errors.CodeDeadlineExceeded:
-			return fmt.Errorf("deadline exceeded: %w", flightErr)
-		case errors.CodeCanceled:
-			return fmt.Errorf("canceled: %w", flightErr)
-		case errors.CodeResourceExhausted:
-			return fmt.Errorf("resource exhausted: %w", flightErr)
-		case errors.CodeInternal:
-			return fmt.Errorf("internal error: %w", flightErr)
-		case errors.CodeUnavailable:
-			return fmt.Errorf("unavailable: %w", flightErr)
-		case errors.CodeUnimplemented:
-			return fmt.Errorf("unimplemented: %w", flightErr)
+		case flightErrors.CodeInvalidRequest:
+			return fmt.Errorf("invalid argument: %s", flightErr.Message)
+		case flightErrors.CodeNotFound:
+			return fmt.Errorf("not found: %s", flightErr.Message)
+		case flightErrors.CodeAlreadyExists:
+			return fmt.Errorf("already exists: %s", flightErr.Message)
+		case flightErrors.CodeUnauthorized:
+			return fmt.Errorf("unauthenticated: %s", flightErr.Message)
+		case flightErrors.CodePermissionDenied:
+			return fmt.Errorf("permission denied: %s", flightErr.Message)
+		case flightErrors.CodeDeadlineExceeded:
+			return fmt.Errorf("deadline exceeded: %s", flightErr.Message)
+		case flightErrors.CodeCanceled:
+			return fmt.Errorf("canceled: %s", flightErr.Message)
+		case flightErrors.CodeResourceExhausted:
+			return fmt.Errorf("resource exhausted: %s", flightErr.Message)
+		case flightErrors.CodeInternal:
+			return fmt.Errorf("internal error: %s", flightErr.Message)
+		case flightErrors.CodeUnavailable:
+			return fmt.Errorf("unavailable: %s", flightErr.Message)
+		case flightErrors.CodeUnimplemented:
+			return fmt.Errorf("unimplemented: %s", flightErr.Message)
 		default:
-			return fmt.Errorf("unknown error: %w", flightErr)
+			// For unknown FlightError codes, still return a generic message.
+			return fmt.Errorf("unknown error: %s", flightErr.Message)
 		}
 	}
 
-	// Default to internal error
+	// For non-FlightError types, return a generic internal error message, including the original error text.
 	return fmt.Errorf("internal error: %w", err)
 }
 
@@ -251,23 +239,30 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 
 	h.logger.Debug("Executing query for streaming", "query", truncateQuery(query))
 
+	// Create query request
 	req := &models.QueryRequest{
 		Query: query,
-		// TransactionID can be added if necessary from context or other means
 	}
+
+	// Execute query
 	queryResult, err := h.queryService.ExecuteQuery(ctx, req)
 	if err != nil {
-		h.logger.Error("Failed to execute query for streaming", "error", err, "query", truncateQuery(query))
+		h.metrics.IncrementCounter("handler_query_errors")
+		h.logger.Error("Failed to execute query", "error", err)
 		return nil, nil, h.mapServiceError(err)
 	}
 
-	if queryResult.Schema == nil {
-		h.metrics.IncrementCounter("handler_query_no_schema")
-		return nil, nil, errors.New(errors.CodeInternal, "query executed but returned no schema")
+	// Get Arrow schema from result
+	schema := queryResult.Schema
+	if schema == nil {
+		h.metrics.IncrementCounter("handler_internal_errors")
+		return nil, nil, h.mapServiceError(errors.New(errors.CodeInternal, "schema is nil"))
 	}
 
-	outCh := make(chan flight.StreamChunk) // Unbuffered, or buffered if a small number of records is typical
+	// Create output channel for stream chunks
+	outCh := make(chan flight.StreamChunk, 16)
 
+	// Start goroutine to stream records
 	go func() {
 		defer close(outCh)
 
@@ -285,14 +280,9 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 					h.logger.Info("Context cancelled during chunk send", "error", ctx.Err())
 					return
 				}
-			} else {
-				h.logger.Debug("Query record is nil or empty, skipping stream send")
 			}
 		}
-		// After the loop, all records from the channel have been processed or the channel was closed.
-		h.logger.Debug("Finished processing records channel for streaming")
 	}()
 
-	h.metrics.IncrementCounter("handler_query_stream_started")
-	return queryResult.Schema, outCh, nil
+	return schema, outCh, nil
 }

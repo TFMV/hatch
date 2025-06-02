@@ -1,4 +1,3 @@
-// Package server implements the Flight SQL server.
 package server
 
 import (
@@ -10,7 +9,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	flightsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
-	pb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
+	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
@@ -270,7 +269,29 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		return nil, err
 	}
 
-	return info, nil
+	// Create a TicketStatementQuery protobuf message
+	ticketProto := &flightpb.TicketStatementQuery{
+		StatementHandle: []byte(cmd.GetQuery()),
+	}
+
+	// Marshal the TicketStatementQuery for the ticket's content
+	ticketBytes, err := proto.Marshal(ticketProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to marshal TicketStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement")
+		return nil, status.Error(codes.Internal, "failed to marshal ticket")
+	}
+
+	// Create a new FlightInfo with the schema and ticket
+	return &flight.FlightInfo{
+		Schema:           info.Schema,
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: ticketBytes},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
 }
 
 // DoGetStatement implements the FlightSQL interface for regular statements.
@@ -278,14 +299,22 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	query := string(ticket.GetStatementHandle()) // The handle *is* the query string
-	s.logger.Debug().Str("query_from_handle", query).Msg("DoGetStatement")
+	// Unmarshal the ticket bytes into a TicketStatementQuery
+	var ticketProto flightpb.TicketStatementQuery
+	if err := proto.Unmarshal(ticket.GetStatementHandle(), &ticketProto); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to unmarshal TicketStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
+		return nil, nil, status.Error(codes.Internal, "failed to unmarshal ticket")
+	}
 
-	// Delegate to queryHandler to execute the query and get the stream
+	// Get the query from the ticket
+	query := string(ticketProto.StatementHandle)
+	s.logger.Debug().Str("query", query).Msg("DoGetStatement")
+
+	// Execute the query
 	schema, stream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
-		// queryHandler.ExecuteQueryAndStream should map to gRPC status errors
 		return nil, nil, err
 	}
 
@@ -517,7 +546,7 @@ func (s *FlightSQLServer) GetFlightInfoPreparedStatement(ctx context.Context, cm
 	}
 
 	// This is the command that gets wrapped in the ticket for GetFlightInfoPreparedStatement
-	preparedCmd := &pb.CommandPreparedStatementQuery{
+	preparedCmd := &flightpb.CommandPreparedStatementQuery{
 		PreparedStatementHandle: cmd.GetPreparedStatementHandle(),
 	}
 
