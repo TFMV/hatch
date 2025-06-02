@@ -104,12 +104,28 @@ func (r *queryRepository) ExecuteQuery(ctx context.Context, query string, txn re
 			record.Retain()
 			totalRows += record.NumRows()
 
+			// Log before sending
+			r.logger.Debug().
+				Int64("exec_query_stream_PRE_SEND_rec_num_cols", record.NumCols()).
+				Int("exec_query_stream_PRE_SEND_rec_schema_fields", record.Schema().NumFields()).
+				Msg("ExecuteQueryStream: State of record BEFORE sending to channel")
+
 			select {
 			case records <- record:
+				// Log after successful send, on sender side
+				r.logger.Debug().
+					Int64("exec_query_stream_POST_SEND_rec_num_cols", record.NumCols()).
+					Int("exec_query_stream_POST_SEND_rec_schema_fields", record.Schema().NumFields()).
+					Msg("ExecuteQueryStream: State of record on SENDER side AFTER sending to channel")
 			case <-ctx.Done():
+				r.logger.Warn().Msg("ExecuteQueryStream: context done before sending record, record will be released by BatchReader or QueryService.")
 				record.Release()
 				return
 			}
+
+			// Whether the record was sent or context was done (and we are about to loop or exit),
+			// the Retain() made by this goroutine for this specific record instance must be balanced.
+			record.Release()
 		}
 
 		if err := reader.Err(); err != nil {
