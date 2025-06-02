@@ -26,3 +26,5 @@ go.work
 .DS_Store
 
 gocheck_artifacts/
+Dockerfile
+.dockerignore

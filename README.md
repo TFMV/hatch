@@ -4,18 +4,14 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/TFMV/flight/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/flight/actions/workflows/ci.yml)
+[![Build and Test](https://github.com/TFMV/hatch/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/hatch/actions/workflows/ci.yml)
 
-> This project is in early development. Please feel free to experiment. Any contributions are appreciated.
+> Hatch is still in early development, and you're welcome to experiment, explore, or contribute in any way you'd like. You don't need to know Go. Bug reports, documentation improvements, and ideas are all appreciated.
 
 ## The Big Idea
 
 A great engine shouldn't be gated by heavyweight infra.
 Hatch keeps DuckDB's magic small, open, and composable—so your data can fly wherever you need it.
-
-Spin up. Query. Stream. Done.
-
-Embedded analytics just broke orbit.
 
 ---
 
@@ -28,7 +24,7 @@ Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. 
 ### 2. Self‑Hosted ≠ Heavyweight  
 
 Options today: embed DuckDB yourself, bolt it onto Python/Java web servers, or go proprietary.  
-Hatch offers a **third way**: a 10 MB server that does one thing—serve SQL over Flight.
+Hatch offers a **third way**: a small server that does one thing: serve SQL over Flight.
 
 ### 3. Pipelines Need Lightweight Nodes  
 
@@ -151,7 +147,7 @@ flowchart LR
     %% ── DATABASE LAYER ────────────────────────────────────────────
     subgraph "Database"
         direction TB
-        DUCK["DuckDB<br/>+ Arrow Ext"]:::dbLayer
+        DUCK["DuckDB<br/>+ Arrow Extension"]:::dbLayer
     end
 
     %% ── FLOW CONNECTIONS ──────────────────────────────────────────
@@ -177,3 +173,101 @@ flowchart LR
 ## 📄 License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Prerequisites
+
+* Go 1.24 or later
+* Make (optional, for using Makefile commands)
+
+## Building and Running
+
+### Local Development
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/TFMV/hatch.git
+   cd hatch
+   ```
+
+2. Install dependencies:
+
+   ```bash
+   go mod download
+   ```
+
+3. Build the application:
+
+   ```bash
+   make build
+   ```
+
+4. Run the server:
+
+   ```bash
+   make run
+   ```
+
+### Using Docker
+
+1. Build the Docker image:
+
+   ```bash
+   make docker-build
+   ```
+
+2. Run the container:
+
+   ```bash
+   make docker-run
+   ```
+
+The server will be available at `localhost:32010`.
+
+## Configuration
+
+The server can be configured using a YAML configuration file. A sample configuration is provided in `config/config.yaml`:
+
+```yaml
+server:
+  address: "0.0.0.0:32010"
+  max_connections: 100
+
+database:
+  dsn: "duckdb://:memory:"
+  max_open_connections: 32
+  health_check_period: "30s"
+
+logging:
+  level: "info"
+  format: "json"
+
+metrics:
+  enabled: true
+  endpoint: ":9090"
+
+tracing:
+  enabled: false
+```
+
+## Development
+
+### Running Tests
+
+```bash
+make test
+```
+
+### Available Make Commands
+
+* `make build` - Build the application
+* `make run` - Run the application locally
+* `make test` - Run tests
+* `make clean` - Clean build artifacts
+* `make docker-build` - Build Docker image
+* `make docker-run` - Run Docker container
+* `make help` - Show all available commands
+
+## License
+
+[Your License Here]
