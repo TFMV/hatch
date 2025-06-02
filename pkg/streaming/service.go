@@ -63,9 +63,5 @@ func (s *service) HandleDoPut(ctx context.Context, desc *flight.FlightDescriptor
 	s.logger.Info().Str("target_table", targetTable).Int64("rows_affected", rowsAffected).Msg("successfully ingested stream")
 	s.metrics.IncrementCounter("streaming_service_handle_do_put_success_total")
 
-	if writer != nil {
-		// TODO:Metadata writing logic here if defined.
-	}
-
 	return nil
 }

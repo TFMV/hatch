@@ -142,16 +142,26 @@ func testDoPutCommandStatementUpdate(srv *TestServer, tableName string) func(*te
 
 		require.NotEmpty(t, info.Endpoint)
 		ticket := &statementQueryTicket{handle: info.Endpoint[0].Ticket.Ticket}
-		_, chunks, err := srv.DoGetStatement(ctx, ticket)
+		schema, chunks, err := srv.DoGetStatement(ctx, ticket)
 		require.NoError(t, err)
-		count := 0
+		require.NotNil(t, schema)
+
+		var count int64
+		var foundCount bool
 		for chunk := range chunks {
 			record := chunk.Data
+			require.NotNil(t, record, "received nil record")
 			if record.NumRows() > 0 {
-				count = int(record.Column(0).(*array.Int64).Value(0))
+				require.Equal(t, 1, record.NumCols(), "expected 1 column for COUNT query")
+				countCol := record.Column(0)
+				require.NotNil(t, countCol, "count column is nil")
+				require.IsType(t, &array.Int64{}, countCol, "expected Int64 column for COUNT")
+				count = countCol.(*array.Int64).Value(0)
+				foundCount = true
 			}
 		}
-		assert.Equal(t, 2, count)
+		require.True(t, foundCount, "did not receive count value in result set")
+		assert.Equal(t, int64(2), count)
 	}
 }
 

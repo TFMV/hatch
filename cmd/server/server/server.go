@@ -1,19 +1,25 @@
-// Package server implements the Flight SQL server.
 package server
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
+	"unicode"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	flightsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/TFMV/flight/cmd/server/config"
 	"github.com/TFMV/flight/cmd/server/middleware"
@@ -47,10 +53,7 @@ type FlightSQLServer struct {
 	preparedStatementHandler handlers.PreparedStatementHandler
 
 	// Services
-	queryService             services.QueryService
-	metadataService          services.MetadataService
-	transactionService       services.TransactionService
-	preparedStatementService services.PreparedStatementService
+	transactionService services.TransactionService
 
 	// State
 	mu       sync.RWMutex
@@ -81,6 +84,23 @@ type Timer interface {
 
 // New creates a new Flight SQL server.
 func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*FlightSQLServer, error) {
+	// Create server instance
+	srv := &FlightSQLServer{
+		config:   cfg,
+		logger:   logger,
+		metrics:  metrics,
+		sessions: make(map[string]*Session),
+	}
+
+	// Create memory allocator
+	srv.allocator = memory.NewGoAllocator()
+
+	// Initialize cache components
+	if cfg.Cache.Enabled {
+		srv.memoryCache = cache.NewMemoryCache(cfg.Cache.MaxSize, srv.allocator)
+		srv.cacheKeyGen = &cache.DefaultCacheKeyGenerator{}
+	}
+
 	// Create connection pool
 	poolCfg := pool.Config{
 		DSN:                cfg.Database,
@@ -92,88 +112,42 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		ConnectionTimeout:  cfg.ConnectionTimeout,
 	}
 
-	connPool, err := pool.New(poolCfg, logger)
+	var err error
+	srv.pool, err = pool.New(poolCfg, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
-	// Create allocator
-	allocator := memory.NewGoAllocator()
-
-	// Create cache
-	cacheCfg := cache.DefaultConfig().
-		WithMaxSize(cfg.Cache.MaxSize).
-		WithTTL(cfg.Cache.TTL).
-		WithAllocator(allocator).
-		WithStats(cfg.Cache.EnableStats)
-	memoryCache := cache.NewMemoryCache(cacheCfg.MaxSize, cacheCfg.Allocator)
-	var cacheKeyGen cache.CacheKeyGenerator = &cache.DefaultCacheKeyGenerator{}
+	// Create adapters
+	logAdapter := &loggerAdapter{logger: logger}
+	handlerMetricsAdapter := &handlerMetricsAdapter{collector: metrics}
+	serviceMetricsAdapter := &serviceMetricsAdapter{collector: metrics}
 
 	// Create SQL info provider
-	sqlInfoProvider := infrastructure.NewSQLInfoProvider(allocator)
+	sqlInfo := infrastructure.NewSQLInfoProvider(srv.allocator)
 
 	// Create repositories
-	queryRepo := duckdb.NewQueryRepository(connPool, allocator, logger)
-	metadataRepo := duckdb.NewMetadataRepository(connPool, sqlInfoProvider, logger)
-	transactionRepo := duckdb.NewTransactionRepository(connPool, logger)
-	preparedStatementRepo := duckdb.NewPreparedStatementRepository(connPool, allocator, logger)
-
-	// Create service adapters
-	serviceLogger := &loggerAdapter{logger}
-	serviceMetrics := &serviceMetricsAdapter{metrics}
+	queryRepo := duckdb.NewQueryRepository(srv.pool, srv.allocator, logger)
+	metadataRepo := duckdb.NewMetadataRepository(srv.pool, sqlInfo, logger)
+	transactionRepo := duckdb.NewTransactionRepository(srv.pool, logger)
+	preparedStatementRepo := duckdb.NewPreparedStatementRepository(srv.pool, srv.allocator, logger)
 
 	// Create services
-	metadataService := services.NewMetadataService(metadataRepo, serviceLogger, serviceMetrics)
-	transactionService := services.NewTransactionService(
-		transactionRepo,
-		cfg.Transaction.CleanupInterval,
-		serviceLogger,
-		serviceMetrics,
-	)
-	preparedStatementService := services.NewPreparedStatementService(
-		preparedStatementRepo,
-		transactionService,
-		serviceLogger,
-		serviceMetrics,
-	)
+	transactionService := services.NewTransactionService(transactionRepo, 30*time.Minute, logAdapter, serviceMetricsAdapter)
+	srv.transactionService = transactionService
 
-	// Create query service with transaction service
-	queryServiceWithTxn := services.NewQueryService(queryRepo, transactionService, serviceLogger, serviceMetrics)
-
-	// Create handler adapters
-	handlerLogger := &loggerAdapter{logger}
-	handlerMetrics := &handlerMetricsAdapter{metrics}
+	queryService := services.NewQueryService(queryRepo, transactionService, logAdapter, serviceMetricsAdapter)
+	metadataService := services.NewMetadataService(metadataRepo, logAdapter, serviceMetricsAdapter)
+	preparedStatementService := services.NewPreparedStatementService(preparedStatementRepo, transactionService, logAdapter, serviceMetricsAdapter)
 
 	// Create handlers
-	queryHandler := handlers.NewQueryHandler(queryServiceWithTxn, allocator, handlerLogger, handlerMetrics)
-	metadataHandler := handlers.NewMetadataHandler(metadataService, allocator, handlerLogger, handlerMetrics)
-	transactionHandler := handlers.NewTransactionHandler(transactionService, handlerLogger, handlerMetrics)
-	preparedStatementHandler := handlers.NewPreparedStatementHandler(
-		preparedStatementService,
-		queryServiceWithTxn,
-		allocator,
-		handlerLogger,
-		handlerMetrics,
-	)
+	srv.queryHandler = handlers.NewQueryHandler(queryService, srv.allocator, logAdapter, handlerMetricsAdapter)
+	srv.metadataHandler = handlers.NewMetadataHandler(metadataService, srv.allocator, logAdapter, handlerMetricsAdapter)
+	srv.transactionHandler = handlers.NewTransactionHandler(transactionService, logAdapter, handlerMetricsAdapter)
+	srv.preparedStatementHandler = handlers.NewPreparedStatementHandler(preparedStatementService, queryService, srv.allocator, logAdapter, handlerMetricsAdapter)
 
-	srv := &FlightSQLServer{
-		config:                   cfg,
-		pool:                     connPool,
-		allocator:                allocator,
-		logger:                   logger,
-		metrics:                  metrics,
-		memoryCache:              memoryCache,
-		cacheKeyGen:              cacheKeyGen,
-		queryHandler:             queryHandler,
-		metadataHandler:          metadataHandler,
-		transactionHandler:       transactionHandler,
-		preparedStatementHandler: preparedStatementHandler,
-		queryService:             queryServiceWithTxn,
-		metadataService:          metadataService,
-		transactionService:       transactionService,
-		preparedStatementService: preparedStatementService,
-		sessions:                 make(map[string]*Session),
-	}
+	// Initialize the base server
+	srv.BaseServer = flightsql.BaseServer{}
 
 	// Register SQL info
 	if err := srv.registerSqlInfo(); err != nil {
@@ -185,7 +159,7 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 
 // Register registers the Flight SQL server with a gRPC server.
 func (s *FlightSQLServer) Register(grpcServer *grpc.Server) {
-	srv := flightsql.NewFlightServer(&s.BaseServer)
+	srv := flightsql.NewFlightServer(s)
 	flight.RegisterFlightServiceServer(grpcServer, srv)
 }
 
@@ -259,15 +233,80 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 	timer := s.metrics.StartTimer("flight_get_info_statement")
 	defer timer.Stop()
 
-	s.logger.Debug().Str("query", cmd.GetQuery()).Msg("GetFlightInfoStatement")
+	query := cleanQuery(cmd.GetQuery())
+	s.logger.Debug().
+		Str("query", query).
+		Msg("GetFlightInfoStatement")
 
-	info, err := s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
+	info, err := s.queryHandler.GetFlightInfo(ctx, query)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement")
 		return nil, err
 	}
 
-	return info, nil
+	// Prepare CommandStatementQuery for FlightDescriptor.Cmd
+	cmdQueryProto := &flightpb.CommandStatementQuery{
+		Query: query,
+	}
+	descCmdBytes, err := proto.Marshal(cmdQueryProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal CommandStatementQuery for FlightDescriptor")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_desc_cmd_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal CommandStatementQuery for descriptor: %v", err))
+	}
+
+	// The StatementHandle will contain the raw query string bytes
+	ticketQueryProto := &flightpb.TicketStatementQuery{
+		StatementHandle: []byte(query),
+	}
+	anyTicket, err := anypb.New(ticketQueryProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for TicketStatementQuery for Endpoint Ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "anypb_new_ticket_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message for ticket query: %v", err)
+	}
+	epTicketBytes, err := proto.Marshal(anyTicket)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(TicketStatementQuery) for Endpoint Ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_ep_ticket_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal Any(TicketStatementQuery) for endpoint: %v", err))
+	}
+	s.logger.Debug().Hex("endpoint_ticket_bytes", epTicketBytes).Int("len", len(epTicketBytes)).Str("underlying_handle_content", query).Msg("GetFlightInfoStatement: generated endpoint ticket bytes (Any wrapping TicketStatementQuery with raw query handle)")
+
+	// Create the flight info
+	flightInfo := &flight.FlightInfo{
+		Schema: info.Schema, // Schema of the result
+		FlightDescriptor: &flight.FlightDescriptor{
+			Type: flight.DescriptorCMD,
+			Cmd:  descCmdBytes, // Marshaled CommandStatementQuery
+		},
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{
+				Ticket: epTicketBytes, // Marshaled TicketStatementQuery
+			},
+			Location: nil, // No specific location for now
+		}},
+		TotalRecords: -1, // Or info.TotalRecords if available and accurate
+		TotalBytes:   -1, // Or info.TotalBytes if available and accurate
+	}
+
+	s.metrics.IncrementCounter("flight_get_info_statement_success")
+	return flightInfo, nil
+}
+
+// cleanQuery removes any control characters from the query string
+func cleanQuery(query string) string {
+	// Remove any leading/trailing whitespace and control characters
+	query = strings.TrimSpace(query)
+
+	// Remove any control characters from the query
+	var cleaned strings.Builder
+	for _, r := range query {
+		if !unicode.IsControl(r) {
+			cleaned.WriteRune(r)
+		}
+	}
+	return cleaned.String()
 }
 
 // DoGetStatement implements the FlightSQL interface.
@@ -275,42 +314,141 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	s.logger.Debug().Msg("DoGetStatement")
+	// The ticket.GetStatementHandle() should contain bytes of a marshaled anypb.Any wrapping flightpb.TicketStatementQuery
+	epTicketBytes := ticket.GetStatementHandle()
+	s.logger.Debug().Hex("ep_ticket_bytes_recv", epTicketBytes).Int("len", len(epTicketBytes)).Msg("DoGetStatement: received endpoint ticket bytes in handle")
 
-	// Extract the query handle from the ticket
-	handle := ticket.GetStatementHandle()
+	var anyCmd anypb.Any
+	if err := proto.Unmarshal(epTicketBytes, &anyCmd); err != nil {
+		s.logger.Error().Err(err).Str("ep_ticket_bytes_str", string(epTicketBytes)).Msg("DoGetStatement: failed to unmarshal handle as Any")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_any_from_handle_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal handle as Any: %v. Ticket bytes: '%s'", err, string(epTicketBytes))
+	}
 
-	// TODO:For now, we'll execute the query directly from the handle
-	// In a production system, you might cache query results and retrieve them here
-	query := string(handle)
+	var ticketStatementQueryProto flightpb.TicketStatementQuery
+	if err := anyCmd.UnmarshalTo(&ticketStatementQueryProto); err != nil {
+		s.logger.Error().Err(err).Str("any_type_url", anyCmd.GetTypeUrl()).Msg("DoGetStatement: failed to unmarshal Any's payload to TicketStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_ticket_stmt_query_from_any_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal Any's payload to TicketStatementQuery: %v", err)
+	}
 
-	s.logger.Debug().Str("query", query).Msg("Executing statement from ticket")
+	// The actual query is in the StatementHandle of the unmarshaled TicketStatementQuery
+	queryBytes := ticketStatementQueryProto.GetStatementHandle()
+	query := string(queryBytes)
+	query = cleanQuery(query)
 
-	// Execute the query using the query handler
-	schema, chunks, err := s.queryHandler.ExecuteStatement(ctx, query, "")
+	if query == "" {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query_from_ticket_handle")
+		return nil, nil, status.Error(codes.InvalidArgument, "query from TicketStatementQuery.StatementHandle cannot be empty")
+	}
+
+	s.logger.Debug().
+		Str("query", query).
+		Msg("DoGetStatement from unmarshaled TicketStatementQuery handle")
+
+	// Execute the query and get the results
+	schema, resultStream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "execute_failed")
 		return nil, nil, err
 	}
 
-	s.metrics.IncrementCounter("flight_queries_executed")
-	return schema, chunks, nil
+	// For COUNT queries, ensure we have a single column
+	isCountQuery := strings.Contains(strings.ToUpper(query), "COUNT(*)")
+	if isCountQuery {
+		if schema.NumFields() != 1 {
+			s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "invalid_count_schema")
+			return nil, nil, status.Error(codes.Internal, "COUNT query must return exactly one column")
+		}
+	}
+
+	// Create a new channel for the stream
+	stream := make(chan flight.StreamChunk, 16)
+
+	// Start streaming results in background
+	go func() {
+		defer close(stream)
+
+		firstChunkLogged := false
+		for chunk := range resultStream {
+			if chunk.Err != nil {
+				s.logger.Error().Err(chunk.Err).Msg("Error reading query results")
+				continue
+			}
+
+			record := chunk.Data
+			record.Retain() // Retain before sending to ensure it's not released prematurely
+
+			// Log details for COUNT(*) query's first data chunk
+			if isCountQuery && !firstChunkLogged && record.NumRows() > 0 {
+				s.logger.Info().
+					Str("query", query).
+					Str("record_schema", record.Schema().String()).
+					Int64("num_rows_in_chunk", record.NumRows()).
+					Msg("Logging first data chunk for COUNT query")
+
+				// Log the value of the first column of the first row for COUNT query
+				if record.NumCols() > 0 {
+					col := record.Column(0)
+					colField := record.Schema().Field(0) // Get field for name/type
+					s.logger.Info().Str("column_name", colField.Name).Str("column_type", colField.Type.String()).Int("column_len", col.Len()).Msg("COUNT query first column details")
+
+					if col.Len() > 0 {
+						switch c := col.(type) {
+						case *array.Int64:
+							s.logger.Info().Int64("count_value_int64", c.Value(0)).Msg("COUNT query first row value (Int64)")
+						case *array.Uint64:
+							s.logger.Info().Uint64("count_value_uint64", c.Value(0)).Msg("COUNT query first row value (Uint64)")
+						default:
+							s.logger.Info().Str("count_array_string", col.String()).Str("count_array_type_reflected", fmt.Sprintf("%T", col)).Msg("COUNT query first column value (generic)")
+						}
+					} else {
+						s.logger.Warn().Msg("COUNT query first column has no rows to log value from")
+					}
+				}
+				firstChunkLogged = true
+			}
+
+			// Send the record to the stream
+			stream <- flight.StreamChunk{Data: record}
+			s.logger.Debug().
+				Int64("rows", record.NumRows()).
+				Msg("Sent record chunk to stream")
+		}
+	}()
+
+	s.metrics.IncrementCounter("flight_do_get_statement_success")
+	return schema, stream, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.
 func (s *FlightSQLServer) DoPutCommandStatementUpdate(ctx context.Context, cmd flightsql.StatementUpdate) (int64, error) {
-	timer := s.metrics.StartTimer("flight_do_put_statement_update")
+	timer := s.metrics.StartTimer("flight_do_put_command_statement_update")
 	defer timer.Stop()
 
-	s.logger.Debug().Str("query", cmd.GetQuery()).Msg("DoPutCommandStatementUpdate")
+	query := cleanQuery(cmd.GetQuery())
+	if query == "" {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutCommandStatementUpdate", "error", "empty_query")
+		return 0, status.Error(codes.InvalidArgument, "query cannot be empty")
+	}
 
-	rowsAffected, err := s.queryHandler.ExecuteUpdate(ctx, cmd.GetQuery(), string(cmd.GetTransactionId()))
+	s.logger.Debug().
+		Str("query", query).
+		Msg("DoPutCommandStatementUpdate")
+
+	// Execute the update command
+	rowsAffected, err := s.queryHandler.ExecuteUpdate(ctx, query, string(cmd.GetTransactionId()))
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoPutCommandStatementUpdate")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutCommandStatementUpdate", "error", "execute_failed")
 		return 0, err
 	}
 
-	s.metrics.RecordHistogram("flight_update_rows", float64(rowsAffected))
+	s.logger.Info().
+		Str("query", query).
+		Int64("rows_affected", rowsAffected).
+		Msg("Successfully executed update command")
+
+	s.metrics.IncrementCounter("flight_do_put_command_statement_update_success")
 	return rowsAffected, nil
 }
 
@@ -327,11 +465,25 @@ func (s *FlightSQLServer) GetFlightInfoCatalogs(ctx context.Context, desc *fligh
 		return nil, err
 	}
 
+	cmdProto := &flightpb.CommandGetCatalogs{}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetCatalogs")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoCatalogs", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetCatalogs)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoCatalogs", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
+	}
+
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -364,11 +516,28 @@ func (s *FlightSQLServer) GetFlightInfoSchemas(ctx context.Context, cmd flightsq
 		return nil, err
 	}
 
+	cmdProto := &flightpb.CommandGetDbSchemas{
+		Catalog:               catalog,
+		DbSchemaFilterPattern: pattern,
+	}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetDBSchemas")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoSchemas", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetDBSchemas)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoSchemas", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
+	}
+
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -407,11 +576,31 @@ func (s *FlightSQLServer) GetFlightInfoTables(ctx context.Context, cmd flightsql
 		return nil, err
 	}
 
+	cmdProto := &flightpb.CommandGetTables{
+		Catalog:                catalog,
+		DbSchemaFilterPattern:  schemaPattern,
+		TableNameFilterPattern: tablePattern,
+		TableTypes:             tableTypes,
+		IncludeSchema:          includeSchema,
+	}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetTables")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoTables", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetTables)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoTables", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
+	}
+
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -498,13 +687,278 @@ func (s *FlightSQLServer) CreatePreparedStatement(ctx context.Context, req fligh
 		return flightsql.ActionCreatePreparedStatementResult{}, err
 	}
 
+	// Get parameter schema separately
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "CreatePreparedStatement")
+		return flightsql.ActionCreatePreparedStatementResult{}, err
+	}
+
 	s.metrics.IncrementCounter("flight_prepared_statements_created")
 
 	return flightsql.ActionCreatePreparedStatementResult{
-		Handle:        []byte(handle),
-		DatasetSchema: schema,
-		// ParameterSchema would be set if we supported parameterized queries
+		Handle:          []byte(handle),
+		DatasetSchema:   schema,
+		ParameterSchema: paramSchema,
 	}, nil
+}
+
+// GetFlightInfoPreparedStatement implements the FlightSQL interface.
+func (s *FlightSQLServer) GetFlightInfoPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	if handle == "" {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "empty_handle")
+		return nil, status.Error(codes.InvalidArgument, "prepared statement handle cannot be empty")
+	}
+
+	s.logger.Debug().
+		Str("handle", handle).
+		Msg("GetFlightInfoPreparedStatement")
+
+	// Get the schema for the prepared statement
+	schema, err := s.preparedStatementHandler.GetSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "get_schema_failed")
+		return nil, err
+	}
+
+	// Create a prepared statement query command
+	cmdProto := &flightpb.CommandPreparedStatementQuery{
+		PreparedStatementHandle: []byte(handle),
+	}
+
+	// Marshal the CommandPreparedStatementQuery directly
+	cmdBytes, err := proto.Marshal(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal CommandPreparedStatementQuery for ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "marshal_direct_cmd_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal direct command: %v", err))
+	}
+	s.logger.Debug().Hex("ticket_bytes_gen_direct", cmdBytes).Int("len", len(cmdBytes)).Msg("GetFlightInfoPreparedStatement: generated direct ticket bytes")
+
+	// Create the flight info
+	flightInfo := &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{
+				Ticket: cmdBytes,
+			},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}
+
+	s.metrics.IncrementCounter("flight_get_info_prepared_statement_success")
+	return flightInfo, nil
+}
+
+// DoGetPreparedStatement implements the FlightSQL interface.
+func (s *FlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle()) // This is the actual statement handle string
+	s.logger.Debug().Str("handle", handle).Msg("DoGetPreparedStatement")
+
+	// Get the parameter schema
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetPreparedStatement", "error", "get_param_schema_failed")
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
+	}
+
+	// Create an empty record for parameters
+	var boundParams arrow.Record
+	if paramSchema.NumFields() > 0 {
+		b := array.NewRecordBuilder(s.allocator, paramSchema)
+		defer b.Release()
+		boundParams = b.NewRecord()
+		defer boundParams.Release()
+	} else {
+		boundParams = array.NewRecord(paramSchema, nil, 0)
+		defer boundParams.Release()
+	}
+
+	// Execute the prepared statement
+	schema, chunks, err := s.preparedStatementHandler.ExecuteQuery(ctx, handle, boundParams)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetPreparedStatement", "error", "execute_failed")
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
+	}
+
+	s.metrics.IncrementCounter("flight_do_get_prepared_statement_success")
+	return schema, chunks, nil
+}
+
+// DoPutPreparedStatementQuery handles prepared statement parameter binding
+func (s *FlightSQLServer) DoPutPreparedStatementQuery(
+	ctx context.Context,
+	cmd flightsql.PreparedStatementQuery,
+	reader flight.MessageReader,
+	writer flight.MetadataWriter,
+) ([]byte, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	s.logger.Debug().
+		Str("handle", handle).
+		Msg("DoPutPreparedStatementQuery")
+
+	// Get the parameter schema first
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery", "error", "get_param_schema_failed")
+		return nil, err
+	}
+
+	// Read the parameter values from the message reader
+	record, err := reader.Read()
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery", "error", "read_params_failed")
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("failed to read parameters: %v", err))
+	}
+	defer record.Release()
+
+	// Create a new record with the correct schema
+	builder := array.NewRecordBuilder(s.allocator, paramSchema)
+	defer builder.Release()
+
+	// Process all rows in the input record
+	for row := 0; row < int(record.NumRows()); row++ {
+		// Copy values from the input record to the builder for each row
+		for i := 0; i < paramSchema.NumFields(); i++ {
+			if int64(i) >= record.NumCols() {
+				s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery", "error", "missing_params")
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("missing parameter at index %d", i))
+			}
+
+			// Handle different parameter types
+			col := record.Column(i)
+			if col.IsNull(row) {
+				builder.Field(i).AppendNull()
+				continue
+			}
+
+			switch paramSchema.Field(i).Type.ID() {
+			case arrow.INT64:
+				if col.DataType().ID() == arrow.INT64 {
+					builder.Field(i).(*array.Int64Builder).Append(array.NewInt64Data(col.Data()).Value(row))
+				} else if col.DataType().ID() == arrow.FLOAT64 {
+					// Convert float64 to int64 if needed
+					val := array.NewFloat64Data(col.Data()).Value(row)
+					builder.Field(i).(*array.Int64Builder).Append(int64(val))
+				} else {
+					return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parameter %d: expected Int64, got %T", i, col))
+				}
+			case arrow.FLOAT64:
+				if col.DataType().ID() == arrow.FLOAT64 {
+					builder.Field(i).(*array.Float64Builder).Append(array.NewFloat64Data(col.Data()).Value(row))
+				} else if col.DataType().ID() == arrow.INT64 {
+					// Convert int64 to float64 if needed
+					val := array.NewInt64Data(col.Data()).Value(row)
+					builder.Field(i).(*array.Float64Builder).Append(float64(val))
+				} else {
+					return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parameter %d: expected Float64, got %T", i, col))
+				}
+			case arrow.STRING:
+				if col.DataType().ID() == arrow.STRING {
+					builder.Field(i).(*array.StringBuilder).Append(array.NewStringData(col.Data()).Value(row))
+				} else {
+					return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("parameter %d: expected String, got %T", i, col))
+				}
+			default:
+				return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("unsupported parameter type: %v", paramSchema.Field(i).Type))
+			}
+		}
+	}
+
+	// Create the final record with all rows
+	boundParams := builder.NewRecord()
+	defer boundParams.Release()
+
+	// Execute the prepared statement with all rows
+	_, _, err = s.preparedStatementHandler.ExecuteQuery(ctx, handle, boundParams)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery", "error", "execute_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
+	}
+
+	s.metrics.IncrementCounter("flight_do_put_prepared_statement_query_success")
+	return nil, nil
+}
+
+// DoPutPreparedStatementUpdate implements the FlightSQL interface.
+func (s *FlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context, cmd flightsql.PreparedStatementUpdate, reader flight.MessageReader) (int64, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_update")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	if handle == "" {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "empty_handle")
+		return 0, status.Error(codes.InvalidArgument, "prepared statement handle cannot be empty")
+	}
+	s.logger.Debug().Str("handle", handle).Msg("DoPutPreparedStatementUpdate")
+
+	// Get the parameter schema first
+	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, handle)
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "get_param_schema_failed")
+		return 0, err
+	}
+
+	// Read the parameter values from the message reader
+	record, err := reader.Read()
+	if err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "read_params_failed")
+		return 0, status.Error(codes.InvalidArgument, fmt.Sprintf("failed to read parameters: %v", err))
+	}
+	defer record.Release()
+
+	// Validate parameter schema matches
+	if !record.Schema().Equal(paramSchema) {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "schema_mismatch")
+		return 0, status.Error(codes.InvalidArgument, "parameter schema mismatch")
+	}
+
+	var totalRowsAffected int64
+
+	// Iterate over each row in the record if it's a batch
+	if record.NumRows() > 1 {
+		s.logger.Debug().Int64("num_rows_in_batch", record.NumRows()).Msg("Processing batch update")
+		for i := 0; i < int(record.NumRows()); i++ {
+			// Create a new record for each row to pass to the handler
+			rowRecord := record.NewSlice(int64(i), int64(i+1))
+
+			rowsAffected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, handle, rowRecord)
+			rowRecord.Release() // Release immediately after use
+			if err != nil {
+				s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "execute_batch_row_failed")
+				return totalRowsAffected, status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement for row %d: %v", i, err))
+			}
+			totalRowsAffected += rowsAffected
+		}
+	} else if record.NumRows() == 1 {
+		// Execute the prepared statement with parameters for a single record
+		rowsAffected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, handle, record)
+		if err != nil {
+			s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementUpdate", "error", "execute_failed")
+			return 0, status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
+		}
+		totalRowsAffected = rowsAffected
+	}
+
+	s.logger.Info().
+		Str("handle", handle).
+		Int64("rows_affected", totalRowsAffected).
+		Msg("Successfully executed prepared update")
+
+	s.metrics.IncrementCounter("flight_do_put_prepared_statement_update_success")
+	return totalRowsAffected, nil
 }
 
 // ClosePreparedStatement implements the FlightSQL interface.
@@ -513,6 +967,10 @@ func (s *FlightSQLServer) ClosePreparedStatement(ctx context.Context, req flight
 	defer timer.Stop()
 
 	handle := string(req.GetPreparedStatementHandle())
+	if handle == "" {
+		s.metrics.IncrementCounter("flight_errors", "method", "ClosePreparedStatement", "error", "empty_handle")
+		return status.Error(codes.InvalidArgument, "prepared statement handle cannot be empty")
+	}
 	s.logger.Debug().Str("handle", handle).Msg("ClosePreparedStatement")
 
 	if err := s.preparedStatementHandler.Close(ctx, handle); err != nil {
@@ -537,103 +995,25 @@ func (s *FlightSQLServer) GetFlightInfoTableTypes(ctx context.Context, desc *fli
 		return nil, err
 	}
 
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
-}
-
-// DoGetTableTypes implements the FlightSQL interface.
-func (s *FlightSQLServer) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	timer := s.metrics.StartTimer("flight_do_get_table_types")
-	defer timer.Stop()
-
-	s.logger.Debug().Msg("DoGetTableTypes")
-
-	return s.metadataHandler.GetTableTypes(ctx)
-}
-
-// GetFlightInfoPrimaryKeys implements the FlightSQL interface.
-func (s *FlightSQLServer) GetFlightInfoPrimaryKeys(ctx context.Context, cmd flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	timer := s.metrics.StartTimer("flight_get_info_primary_keys")
-	defer timer.Stop()
-
-	s.logger.Debug().
-		Str("catalog", orEmpty(cmd.Catalog)).
-		Str("schema", orEmpty(cmd.DBSchema)).
-		Str("table", cmd.Table).
-		Msg("GetFlightInfoPrimaryKeys")
-
-	catalog := cmd.Catalog
-	dbSchema := cmd.DBSchema
-	table := cmd.Table
-
-	schema, _, err := s.metadataHandler.GetPrimaryKeys(ctx, catalog, dbSchema, table)
+	cmdProto := &flightpb.CommandGetTableTypes{}
+	anyCmd, err := anypb.New(cmdProto)
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPrimaryKeys")
-		return nil, err
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetTableTypes")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoTableTypes", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetTableTypes)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoTableTypes", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
 	}
 
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
-}
-
-// DoGetPrimaryKeys implements the FlightSQL interface.
-func (s *FlightSQLServer) DoGetPrimaryKeys(ctx context.Context, cmd flightsql.TableRef) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	timer := s.metrics.StartTimer("flight_do_get_primary_keys")
-	defer timer.Stop()
-
-	s.logger.Debug().
-		Str("catalog", orEmpty(cmd.Catalog)).
-		Str("schema", orEmpty(cmd.DBSchema)).
-		Str("table", cmd.Table).
-		Msg("DoGetPrimaryKeys")
-
-	catalog := cmd.Catalog
-	dbSchema := cmd.DBSchema
-	table := cmd.Table
-
-	return s.metadataHandler.GetPrimaryKeys(ctx, catalog, dbSchema, table)
-}
-
-// GetFlightInfoImportedKeys implements the FlightSQL interface.
-func (s *FlightSQLServer) GetFlightInfoImportedKeys(ctx context.Context, cmd flightsql.TableRef, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	timer := s.metrics.StartTimer("flight_get_info_imported_keys")
-	defer timer.Stop()
-
-	s.logger.Debug().
-		Str("catalog", orEmpty(cmd.Catalog)).
-		Str("schema", orEmpty(cmd.DBSchema)).
-		Str("table", cmd.Table).
-		Msg("GetFlightInfoImportedKeys")
-
-	catalog := cmd.Catalog
-	dbSchema := cmd.DBSchema
-	table := cmd.Table
-
-	schema, _, err := s.metadataHandler.GetImportedKeys(ctx, catalog, dbSchema, table)
-	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoImportedKeys")
-		return nil, err
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -679,11 +1059,29 @@ func (s *FlightSQLServer) GetFlightInfoExportedKeys(ctx context.Context, cmd fli
 		return nil, err
 	}
 
+	cmdProto := &flightpb.CommandGetExportedKeys{
+		Catalog:  catalog,
+		DbSchema: dbSchema,
+		Table:    table,
+	}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetExportedKeys")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoExportedKeys", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetExportedKeys)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoExportedKeys", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
+	}
+
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -715,19 +1113,36 @@ func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(ctx context.Context, cmd fli
 
 	s.logger.Debug().Msg("GetFlightInfoXdbcTypeInfo")
 
-	dataType := cmd.GetDataType()
+	dataTypePtr := cmd.GetDataType()
 
-	schema, _, err := s.metadataHandler.GetXdbcTypeInfo(ctx, dataType)
+	schema, _, err := s.metadataHandler.GetXdbcTypeInfo(ctx, dataTypePtr)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoXdbcTypeInfo")
 		return nil, err
+	}
+
+	cmdProto := &flightpb.CommandGetXdbcTypeInfo{}
+	if dataTypePtr != nil {
+		cmdProto.DataType = dataTypePtr
+	}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetXdbcTypeInfo")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoXdbcTypeInfo", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetXdbcTypeInfo)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoXdbcTypeInfo", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
 	}
 
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -763,11 +1178,27 @@ func (s *FlightSQLServer) GetFlightInfoSqlInfo(ctx context.Context, cmd flightsq
 		return nil, err
 	}
 
+	cmdProto := &flightpb.CommandGetSqlInfo{
+		Info: info,
+	}
+	anyCmd, err := anypb.New(cmdProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandGetSqlInfo")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoSqlInfo", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+	}
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandGetSqlInfo)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoSqlInfo", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
+	}
+
 	return &flight.FlightInfo{
 		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+			Ticket: &flight.Ticket{Ticket: cmdBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,

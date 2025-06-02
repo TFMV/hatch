@@ -18,6 +18,9 @@ type QueryHandler interface {
 
 	// GetFlightInfo returns flight information for a statement.
 	GetFlightInfo(ctx context.Context, query string) (*flight.FlightInfo, error)
+
+	// ExecuteQueryAndStream executes a query and returns its schema and a channel of StreamChunks.
+	ExecuteQueryAndStream(ctx context.Context, query string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
 
 // MetadataHandler handles metadata discovery operations.
@@ -81,6 +84,9 @@ type PreparedStatementHandler interface {
 
 	// GetParameterSchema returns the parameter schema for a prepared statement.
 	GetParameterSchema(ctx context.Context, handle string) (*arrow.Schema, error)
+
+	// SetParameters sets/binds parameters for a prepared statement.
+	SetParameters(ctx context.Context, handle string, params arrow.Record) error
 }
 
 // Logger defines the logging interface.

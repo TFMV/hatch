@@ -33,7 +33,7 @@ func NewSQLInfoProvider(allocator memory.Allocator) *SQLInfoProvider {
 // initializeSQLInfo initializes the SQL info map with DuckDB capabilities.
 func (p *SQLInfoProvider) initializeSQLInfo() {
 	// Flight SQL identification
-	p.infoMap[uint32(flightsql.SqlInfoFlightSqlServerName)] = "DuckDB Flight SQL Server"
+	p.infoMap[uint32(flightsql.SqlInfoFlightSqlServerName)] = "Hatch"
 	p.infoMap[uint32(flightsql.SqlInfoFlightSqlServerVersion)] = "2.0.0"
 	p.infoMap[uint32(flightsql.SqlInfoFlightSqlServerArrowVersion)] = "18.0.0"
 	p.infoMap[uint32(flightsql.SqlInfoFlightSqlServerReadOnly)] = false

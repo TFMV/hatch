@@ -3,6 +3,8 @@ package services
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,7 @@ import (
 	"github.com/TFMV/flight/pkg/errors"
 	"github.com/TFMV/flight/pkg/models"
 	"github.com/TFMV/flight/pkg/repositories"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // preparedStatementService implements PreparedStatementService interface.
@@ -69,13 +72,56 @@ func (s *preparedStatementService) Create(ctx context.Context, query string, tra
 	// Generate handle
 	handle := uuid.New().String()
 
+	// Create parameter schema based on the query
+	var paramSchema *arrow.Schema
+	if strings.Contains(query, "?") {
+		// Count the number of parameters
+		paramCount := strings.Count(query, "?")
+		fields := make([]arrow.Field, paramCount)
+
+		// Try to infer parameter types from the query
+		// This is a simple implementation - in a real system, you'd want to use a proper SQL parser
+		queryUpper := strings.ToUpper(query)
+		if strings.Contains(queryUpper, "INSERT INTO") {
+			// For INSERT queries, try to infer types from the column list
+			startIdx := strings.Index(queryUpper, "(")
+			endIdx := strings.Index(queryUpper, ")")
+			if startIdx > 0 && endIdx > startIdx {
+				columns := strings.Split(query[startIdx+1:endIdx], ",")
+				for i := 0; i < paramCount && i < len(columns); i++ {
+					colName := strings.TrimSpace(columns[i])
+					fields[i] = arrow.Field{
+						Name:     fmt.Sprintf("param%d", i+1),
+						Type:     inferTypeFromColumnName(colName),
+						Nullable: true,
+					}
+				}
+			}
+		}
+
+		// For any remaining fields or if we couldn't infer types, use default types
+		for i := 0; i < paramCount; i++ {
+			if fields[i].Type == nil {
+				fields[i] = arrow.Field{
+					Name:     fmt.Sprintf("param%d", i+1),
+					Type:     arrow.PrimitiveTypes.Int64,
+					Nullable: true,
+				}
+			}
+		}
+		paramSchema = arrow.NewSchema(fields, nil)
+	}
+
 	// Create prepared statement
 	stmt := &models.PreparedStatement{
-		Handle:        handle,
-		Query:         query,
-		CreatedAt:     time.Now(),
-		LastUsedAt:    time.Now(),
-		TransactionID: transactionID,
+		Handle:            handle,
+		Query:             query,
+		ParameterSchema:   paramSchema,
+		ResultSetSchema:   arrow.NewSchema([]arrow.Field{}, nil),                                   // Initialize with empty schema
+		IsResultSetUpdate: !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(query)), "SELECT"), // Basic check for update type
+		CreatedAt:         time.Now(),
+		LastUsedAt:        time.Now(),
+		TransactionID:     transactionID,
 	}
 
 	// Store in repository
@@ -89,9 +135,27 @@ func (s *preparedStatementService) Create(ctx context.Context, query string, tra
 	s.metrics.IncrementCounter("prepared_statements_created")
 	s.metrics.RecordGauge("active_prepared_statements", s.getActiveStatementCount(ctx))
 
-	s.logger.Info("Prepared statement created", "handle", handle, "query", query)
+	s.logger.Info("Prepared statement created",
+		"handle", handle,
+		"query", query,
+		"has_parameters", paramSchema != nil)
 
 	return stmt, nil
+}
+
+// inferTypeFromColumnName tries to infer the Arrow type from a column name
+func inferTypeFromColumnName(colName string) arrow.DataType {
+	colName = strings.ToUpper(colName)
+	switch {
+	case strings.Contains(colName, "ID") || strings.Contains(colName, "COUNT"):
+		return arrow.PrimitiveTypes.Int64
+	case strings.Contains(colName, "NAME") || strings.Contains(colName, "STRING") || strings.Contains(colName, "TEXT"):
+		return arrow.BinaryTypes.String
+	case strings.Contains(colName, "FLOAT") || strings.Contains(colName, "DOUBLE") || strings.Contains(colName, "DECIMAL"):
+		return arrow.PrimitiveTypes.Float64
+	default:
+		return arrow.PrimitiveTypes.Int64 // Default to Int64
+	}
 }
 
 // Get retrieves a prepared statement by handle.
@@ -296,6 +360,38 @@ func (s *preparedStatementService) ExecuteUpdate(ctx context.Context, handle str
 		"execution_time", executionTime)
 
 	return result, nil
+}
+
+// SetParameters sets parameters for a prepared statement.
+func (s *preparedStatementService) SetParameters(ctx context.Context, handle string, params [][]interface{}) error {
+	timer := s.metrics.StartTimer("prepared_statement_set_parameters")
+	defer timer.Stop()
+
+	s.logger.Debug("Setting parameters for prepared statement", "handle", handle, "param_batches", len(params))
+
+	// Get prepared statement
+	stmt, err := s.Get(ctx, handle)
+	if err != nil {
+		return err // Get already logs and increments metrics
+	}
+
+	// Store parameters in the statement model (or call repository to update if needed)
+	// This depends on how the repository and model are designed to handle parameter binding.
+	// For this example, let's assume the PreparedStatement model can hold the bound parameters.
+	// If params are to be stored persistently or in a way the repo manages, this would call s.repo.SetParameters(ctx, handle, params)
+	stmt.BoundParameters = params // This field needs to be added to models.PreparedStatement
+	stmt.LastUsedAt = time.Now()
+
+	// If the repository needs to be updated with the new BoundParameters or LastUsedAt:
+	if err := s.repo.Store(ctx, stmt); err != nil {
+		s.metrics.IncrementCounter("prepared_statement_set_parameters_errors")
+		s.logger.Error("Failed to update prepared statement with new parameters", "error", err, "handle", handle)
+		return errors.Wrap(err, errors.CodeInternal, "failed to set parameters")
+	}
+
+	s.logger.Info("Parameters set for prepared statement", "handle", handle)
+	s.metrics.IncrementCounter("prepared_statement_parameters_set")
+	return nil
 }
 
 // List returns all prepared statements for a transaction.

@@ -24,3 +24,5 @@ art/
 go.work
 
 .DS_Store
+
+gocheck_artifacts/
