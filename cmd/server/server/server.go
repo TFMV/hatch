@@ -244,19 +244,45 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		return nil, err
 	}
 
-	// For simple statement queries, the ticket can just be the query string itself.
-	ticketBytes := []byte(query)
+	// Prepare CommandStatementQuery for FlightDescriptor.Cmd
+	cmdQueryProto := &flightpb.CommandStatementQuery{
+		Query: query,
+	}
+	descCmdBytes, err := proto.Marshal(cmdQueryProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal CommandStatementQuery for FlightDescriptor")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_desc_cmd_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal CommandStatementQuery for descriptor: %v", err))
+	}
+
+	// The StatementHandle will contain the raw query string bytes
+	ticketQueryProto := &flightpb.TicketStatementQuery{
+		StatementHandle: []byte(query),
+	}
+	anyTicket, err := anypb.New(ticketQueryProto)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to create Any for TicketStatementQuery for Endpoint Ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "anypb_new_ticket_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message for ticket query: %v", err)
+	}
+	epTicketBytes, err := proto.Marshal(anyTicket)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(TicketStatementQuery) for Endpoint Ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_ep_ticket_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal Any(TicketStatementQuery) for endpoint: %v", err))
+	}
+	s.logger.Debug().Hex("endpoint_ticket_bytes", epTicketBytes).Int("len", len(epTicketBytes)).Str("underlying_handle_content", query).Msg("GetFlightInfoStatement: generated endpoint ticket bytes (Any wrapping TicketStatementQuery with raw query handle)")
 
 	// Create the flight info
 	flightInfo := &flight.FlightInfo{
 		Schema: info.Schema, // Schema of the result
 		FlightDescriptor: &flight.FlightDescriptor{
 			Type: flight.DescriptorCMD,
-			Cmd:  ticketBytes, // Use the query bytes for the descriptor command
+			Cmd:  descCmdBytes, // Marshaled CommandStatementQuery
 		},
 		Endpoint: []*flight.FlightEndpoint{{
 			Ticket: &flight.Ticket{
-				Ticket: ticketBytes, // Use the query bytes for the ticket
+				Ticket: epTicketBytes, // Marshaled TicketStatementQuery
 			},
 			Location: nil, // No specific location for now
 		}},
@@ -288,34 +314,37 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	// Extract the query from the ticket
+	// The ticket.GetStatementHandle() should contain bytes of a marshaled anypb.Any wrapping flightpb.TicketStatementQuery
+	epTicketBytes := ticket.GetStatementHandle()
+	s.logger.Debug().Hex("ep_ticket_bytes_recv", epTicketBytes).Int("len", len(epTicketBytes)).Msg("DoGetStatement: received endpoint ticket bytes in handle")
+
 	var anyCmd anypb.Any
-	if err := proto.Unmarshal(ticket.GetStatementHandle(), &anyCmd); err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_any_failed")
-		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal ticket as Any: %v", err)
+	if err := proto.Unmarshal(epTicketBytes, &anyCmd); err != nil {
+		s.logger.Error().Err(err).Str("ep_ticket_bytes_str", string(epTicketBytes)).Msg("DoGetStatement: failed to unmarshal handle as Any")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_any_from_handle_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal handle as Any: %v. Ticket bytes: '%s'", err, string(epTicketBytes))
 	}
 
-	// Check if the command is a statement query
-	if !anyCmd.MessageIs(&flightpb.CommandStatementQuery{}) {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "invalid_command_type")
-		return nil, nil, status.Error(codes.InvalidArgument, "invalid command type: expected CommandStatementQuery")
+	var ticketStatementQueryProto flightpb.TicketStatementQuery
+	if err := anyCmd.UnmarshalTo(&ticketStatementQueryProto); err != nil {
+		s.logger.Error().Err(err).Str("any_type_url", anyCmd.GetTypeUrl()).Msg("DoGetStatement: failed to unmarshal Any's payload to TicketStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_ticket_stmt_query_from_any_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal Any's payload to TicketStatementQuery: %v", err)
 	}
 
-	var cmdProto flightpb.CommandStatementQuery
-	if err := anyCmd.UnmarshalTo(&cmdProto); err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_cmd_failed")
-		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal CommandStatementQuery from Any: %v", err)
-	}
+	// The actual query is in the StatementHandle of the unmarshaled TicketStatementQuery
+	queryBytes := ticketStatementQueryProto.GetStatementHandle()
+	query := string(queryBytes)
+	query = cleanQuery(query)
 
-	query := cleanQuery(cmdProto.GetQuery())
 	if query == "" {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query")
-		return nil, nil, status.Error(codes.InvalidArgument, "query cannot be empty")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query_from_ticket_handle")
+		return nil, nil, status.Error(codes.InvalidArgument, "query from TicketStatementQuery.StatementHandle cannot be empty")
 	}
 
 	s.logger.Debug().
 		Str("query", query).
-		Msg("DoGetStatement")
+		Msg("DoGetStatement from unmarshaled TicketStatementQuery handle")
 
 	// Execute the query and get the results
 	schema, resultStream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
@@ -701,20 +730,14 @@ func (s *FlightSQLServer) GetFlightInfoPreparedStatement(ctx context.Context, cm
 		PreparedStatementHandle: []byte(handle),
 	}
 
-	anyCmd, err := anypb.New(cmdProto)
+	// Marshal the CommandPreparedStatementQuery directly
+	cmdBytes, err := proto.Marshal(cmdProto)
 	if err != nil {
-		s.logger.Error().Err(err).Msg("failed to create Any for CommandPreparedStatementQuery")
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "anypb_new_failed")
-		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
+		s.logger.Error().Err(err).Msg("failed to marshal CommandPreparedStatementQuery for ticket")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "marshal_direct_cmd_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal direct command: %v", err))
 	}
-
-	// Marshal the Any command
-	cmdBytes, err := proto.Marshal(anyCmd)
-	if err != nil {
-		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandPreparedStatementQuery)")
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoPreparedStatement", "error", "marshal_failed")
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket command: %v", err))
-	}
+	s.logger.Debug().Hex("ticket_bytes_gen_direct", cmdBytes).Int("len", len(cmdBytes)).Msg("GetFlightInfoPreparedStatement: generated direct ticket bytes")
 
 	// Create the flight info
 	flightInfo := &flight.FlightInfo{
