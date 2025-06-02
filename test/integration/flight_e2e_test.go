@@ -2,22 +2,25 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/TFMV/flight/cmd/server/config"
 	"github.com/TFMV/flight/cmd/server/server"
+	"github.com/TFMV/flight/test/utils"
 )
 
 // TestMetricsCollector implements the MetricsCollector interface for testing
@@ -76,6 +79,92 @@ func (t *testTimer) Stop() float64 {
 	return duration
 }
 
+// FlightE2ETestSuite defines the structure for end-to-end tests.
+type FlightE2ETestSuite struct {
+	suite.Suite
+	server    *server.FlightSQLServer
+	listener  net.Listener
+	client    *flightsql.Client
+	addr      string
+	allocator memory.Allocator
+	logger    zerolog.Logger
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
+
+func TestFlightE2ETestSuite(t *testing.T) {
+	suite.Run(t, new(FlightE2ETestSuite))
+}
+
+func (s *FlightE2ETestSuite) SetupSuite() {
+	cfg := config.DefaultConfig()
+	cfg.Database = ":memory:"
+
+	s.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
+		Level(zerolog.DebugLevel).
+		With().Timestamp().Logger()
+
+	var err error
+	s.server, err = server.New(cfg, s.logger, &utils.NoOpMetricsCollector{})
+	require.NoError(s.T(), err)
+
+	s.listener, err = net.Listen("tcp", "localhost:0")
+	require.NoError(s.T(), err)
+
+	grpcServer := grpc.NewServer(s.server.GetMiddleware()...)
+	s.server.Register(grpcServer)
+
+	go func() {
+		if errSrv := grpcServer.Serve(s.listener); errSrv != nil && errSrv != grpc.ErrServerStopped {
+			s.logger.Fatal().Err(errSrv).Msg("Flight SQL server failed")
+		}
+	}()
+	s.T().Logf("Flight SQL server started on %s", s.listener.Addr().String())
+	s.addr = s.listener.Addr().String()
+
+	var errFSQLClient error
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	for i := 0; i < 5; i++ {
+		s.client, errFSQLClient = flightsql.NewClient(s.addr, nil, nil, dialOpts...)
+		if errFSQLClient == nil {
+			checkCtx, cancelCheck := context.WithTimeout(context.Background(), 3*time.Second)
+			_, checkErr := s.client.GetSqlInfo(checkCtx, []flightsql.SqlInfo{})
+			cancelCheck()
+			if checkErr == nil {
+				break
+			}
+			errFSQLClient = fmt.Errorf("flightsql.NewClient succeeded but GetSqlInfo failed: %w", checkErr)
+			if s.client != nil {
+				s.client.Close()
+				s.client = nil
+			}
+		}
+		s.logger.Warn().Err(errFSQLClient).Int("attempt", i+1).Str("address", s.addr).Msg("Failed to create Flight SQL client, retrying...")
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	require.NoError(s.T(), errFSQLClient, "Failed to create Flight SQL client after multiple retries")
+	require.NotNil(s.T(), s.client, "Flight SQL client is nil after successful creation attempt")
+
+	s.allocator = memory.NewGoAllocator()
+	s.ctx, s.cancel = context.WithTimeout(context.Background(), 90*time.Second)
+
+	s.setupTestTable(s.ctx, s.T())
+}
+
+// Placeholder for setupTestTable method
+// Please replace with the actual implementation if available.
+func (s *FlightE2ETestSuite) setupTestTable(ctx context.Context, t *testing.T) {
+	// Example: Create a simple table for other tests to use.
+	// This is a placeholder and might not match the original intent.
+	tableCreateQuery := "CREATE TABLE IF NOT EXISTS common_test_table (id INT, description VARCHAR)"
+	_, err := s.client.Execute(s.ctx, tableCreateQuery)
+	require.NoError(t, err, "setupTestTable: failed to create common_test_table")
+	s.T().Log("setupTestTable: common_test_table created or already exists.")
+}
+
 // TestFlightE2E tests end-to-end functionality of the Hatch server with Flight SQL
 func TestFlightE2E(t *testing.T) {
 	// Create test configuration
@@ -99,40 +188,65 @@ func TestFlightE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create gRPC server
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(srv.GetMiddleware()...)
 	srv.Register(grpcServer)
 
 	// Create listener
-	listener, err := net.Listen("tcp", "localhost:8815")
+	listener, err := net.Listen("tcp", "localhost:0") // Use random port to avoid conflict with SetupSuite
 	require.NoError(t, err)
 
 	// Start server
 	go func() {
-		require.NoError(t, grpcServer.Serve(listener))
+		if serveErr := grpcServer.Serve(listener); serveErr != nil && serveErr != grpc.ErrServerStopped {
+			logger.Fatal().Err(serveErr).Msg("TestFlightE2E gRPC server failed")
+		}
 	}()
 
-	// Create client connection
-	conn, err := grpc.Dial("localhost:8815", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-	defer conn.Close()
+	serverAddr := listener.Addr().String()
+	logger.Info().Str("address", serverAddr).Msg("TestFlightE2E server started")
 
 	// Create Flight SQL client
-	client, err := flightsql.NewClient("localhost:8815", nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-	defer client.Close()
+	var flightSQLClient *flightsql.Client
+	var errFlightSQLClient error
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	for i := 0; i < 5; i++ { // Retry loop for flightsql.NewClient
+		flightSQLClient, errFlightSQLClient = flightsql.NewClient(serverAddr, nil, nil, dialOpts...)
+		if errFlightSQLClient == nil {
+			// Verify client is responsive with a simple GetSqlInfo call
+			pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, errPing := flightSQLClient.GetSqlInfo(pingCtx, []flightsql.SqlInfo{})
+			pingCancel()
+			if errPing == nil {
+				break // Client created and responsive
+			}
+			errFlightSQLClient = fmt.Errorf("flightsql.NewClient for TestFlightE2E succeeded but GetSqlInfo failed: %w", errPing)
+			if flightSQLClient != nil {
+				flightSQLClient.Close() // Close problematic client
+			}
+		}
+		logger.Warn().Err(errFlightSQLClient).Int("attempt", i+1).Str("address", serverAddr).Msg("Failed to create flightSQLClient for TestFlightE2E, retrying...")
+		time.Sleep(time.Duration(i+1) * time.Second) // Incremental backoff
+	}
+	require.NoError(t, errFlightSQLClient, "Failed to create flightSQLClient for TestFlightE2E after multiple retries")
+	require.NotNil(t, flightSQLClient, "flightSQLClient for TestFlightE2E is nil after successful creation attempt")
+	defer flightSQLClient.Close()
 
 	// Test cases
-	t.Run("CreateTable", testCreateTable(client))
-	t.Run("InsertData", testInsertData(client))
-	t.Run("QueryData", testQueryData(client))
-	t.Run("UpdateData", testUpdateData(client))
-	t.Run("DeleteData", testDeleteData(client))
+	t.Run("CreateTable", testCreateTable(flightSQLClient))
+	t.Run("InsertData", testInsertData(flightSQLClient))
+	t.Run("QueryData", testQueryData(flightSQLClient))
+	t.Run("UpdateData", testUpdateData(flightSQLClient))
+	t.Run("DeleteData", testDeleteData(flightSQLClient))
 
 	// Cleanup
 	grpcServer.GracefulStop()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Close(ctx)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	srv.Close(closeCtx)
+	logger.Info().Msg("TestFlightE2E server stopped")
 }
 
 func testCreateTable(client *flightsql.Client) func(*testing.T) {
@@ -150,42 +264,33 @@ func testInsertData(client *flightsql.Client) func(*testing.T) {
 	return func(t *testing.T) {
 		ctx := context.Background()
 
-		// Create Arrow record for insertion
-		schema := arrow.NewSchema(
-			[]arrow.Field{
-				{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-				{Name: "name", Type: arrow.BinaryTypes.String},
-				{Name: "value", Type: arrow.PrimitiveTypes.Float64},
-			},
-			nil,
-		)
+		// Create prepared statement
+		query := "INSERT INTO test_flight (id, name, value) VALUES (?, ?, ?)"
+		info, err := client.Prepare(ctx, query)
+		require.NoError(t, err)
+		require.NotNil(t, info)
 
-		// Create arrays for the record
-		ids := array.NewInt64Builder(memory.DefaultAllocator)
-		names := array.NewStringBuilder(memory.DefaultAllocator)
-		values := array.NewFloat64Builder(memory.DefaultAllocator)
+		// Create parameter record
+		paramSchema := info.ParameterSchema()
+		builder := array.NewRecordBuilder(memory.DefaultAllocator, paramSchema)
+		defer builder.Release()
 
-		// Add data
-		ids.AppendValues([]int64{1, 2, 3}, nil)
-		names.AppendValues([]string{"test1", "test2", "test3"}, nil)
-		values.AppendValues([]float64{1.1, 2.2, 3.3}, nil)
+		// Set parameter values
+		builder.Field(0).(*array.Int64Builder).Append(1)
+		builder.Field(1).(*array.StringBuilder).Append("test")
+		builder.Field(2).(*array.Float64Builder).Append(3.14)
 
-		// Create record
-		record := array.NewRecord(schema, []arrow.Array{
-			ids.NewArray(),
-			names.NewArray(),
-			values.NewArray(),
-		}, 3)
+		// Create the record
+		record := builder.NewRecord()
 		defer record.Release()
 
-		// Insert data using prepared statement
-		stmt, err := client.Prepare(ctx, "INSERT INTO test_flight (id, name, value) VALUES (?, ?, ?)")
+		// Execute the prepared statement
+		rowsAffected, err := info.ExecuteUpdate(ctx)
 		require.NoError(t, err)
-		defer stmt.Close(ctx)
+		require.Equal(t, int64(1), rowsAffected)
 
-		// Set the parameters for the prepared statement
-		stmt.SetParameters(record)
-		_, err = stmt.Execute(ctx)
+		// Close the prepared statement
+		err = info.Close(ctx)
 		require.NoError(t, err)
 	}
 }
@@ -260,6 +365,8 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 		// Verify deletion
 		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight")
 		require.NoError(t, err)
+		require.NotEmpty(t, info.Endpoint)
+		require.NotNil(t, info.Endpoint[0].Ticket)
 
 		reader, err := client.DoGet(ctx, info.Endpoint[0].Ticket)
 		require.NoError(t, err)

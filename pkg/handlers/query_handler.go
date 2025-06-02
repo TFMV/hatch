@@ -10,8 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	"github.com/TFMV/flight/pkg/errors"
-	flightErrors "github.com/TFMV/flight/pkg/errors" // Custom errors aliased
+	flightErrors "github.com/TFMV/flight/pkg/errors"
 	"github.com/TFMV/flight/pkg/models"
 	"github.com/TFMV/flight/pkg/services"
 	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
@@ -162,7 +161,7 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 	schema := result.Schema
 	if schema == nil {
 		h.metrics.IncrementCounter("handler_internal_errors")
-		return nil, h.mapServiceError(errors.New(errors.CodeInternal, "schema is nil"))
+		return nil, h.mapServiceError(flightErrors.New(flightErrors.CodeInternal, "schema is nil"))
 	}
 
 	// Create a FlightInfo with the schema
@@ -256,7 +255,7 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 	schema := queryResult.Schema
 	if schema == nil {
 		h.metrics.IncrementCounter("handler_internal_errors")
-		return nil, nil, h.mapServiceError(errors.New(errors.CodeInternal, "schema is nil"))
+		return nil, nil, h.mapServiceError(flightErrors.New(flightErrors.CodeInternal, "schema is nil"))
 	}
 
 	// Create output channel for stream chunks
@@ -267,15 +266,20 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 		defer close(outCh)
 
 		// queryResult.Records is <-chan arrow.Record
-		for record := range queryResult.Records { // Corrected loop for channel
-			currentRecord := record       // Capture range variable for the goroutine
-			defer currentRecord.Release() // Release each record after processing
+		for record := range queryResult.Records {
+			if record == nil {
+				continue
+			}
 
-			if currentRecord != nil && currentRecord.NumRows() > 0 {
+			// Create a copy of the record to avoid data race
+			recordCopy := record.NewSlice(0, record.NumRows())
+			defer recordCopy.Release()
+
+			if recordCopy.NumRows() > 0 {
 				// Send the chunk
 				select {
-				case outCh <- flight.StreamChunk{Data: currentRecord}: // Send the arrow.Record directly
-					h.logger.Debug("Sent record chunk to stream", "rows", currentRecord.NumRows())
+				case outCh <- flight.StreamChunk{Data: recordCopy}:
+					h.logger.Debug("Sent record chunk to stream", "rows", recordCopy.NumRows())
 				case <-ctx.Done():
 					h.logger.Info("Context cancelled during chunk send", "error", ctx.Err())
 					return

@@ -53,10 +53,7 @@ type FlightSQLServer struct {
 	preparedStatementHandler handlers.PreparedStatementHandler
 
 	// Services
-	queryService             services.QueryService
-	metadataService          services.MetadataService
-	transactionService       services.TransactionService
-	preparedStatementService services.PreparedStatementService
+	transactionService services.TransactionService
 
 	// State
 	mu       sync.RWMutex
@@ -137,6 +134,8 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 
 	// Create services
 	transactionService := services.NewTransactionService(transactionRepo, 30*time.Minute, logAdapter, serviceMetricsAdapter)
+	srv.transactionService = transactionService
+
 	queryService := services.NewQueryService(queryRepo, transactionService, logAdapter, serviceMetricsAdapter)
 	metadataService := services.NewMetadataService(metadataRepo, logAdapter, serviceMetricsAdapter)
 	preparedStatementService := services.NewPreparedStatementService(preparedStatementRepo, transactionService, logAdapter, serviceMetricsAdapter)
@@ -304,10 +303,16 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	defer timer.Stop()
 
 	// Extract the query from the ticket
+	var anyCmd anypb.Any
+	if err := proto.Unmarshal(ticket.GetStatementHandle(), &anyCmd); err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_any_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal ticket as Any: %v", err)
+	}
+
 	var cmdProto flightpb.CommandStatementQuery
-	if err := proto.Unmarshal(ticket.GetStatementHandle(), &cmdProto); err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_failed")
-		return nil, nil, status.Error(codes.InvalidArgument, fmt.Sprintf("failed to unmarshal ticket command: %v", err))
+	if err := anyCmd.UnmarshalTo(&cmdProto); err != nil {
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_cmd_failed")
+		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal CommandStatementQuery from Any: %v", err)
 	}
 
 	query := cleanQuery(cmdProto.GetQuery())
@@ -323,26 +328,65 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	}
 
 	// For COUNT queries, ensure we have a single column
-	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(query)), "SELECT COUNT(") {
+	isCountQuery := strings.Contains(strings.ToUpper(query), "COUNT(*)")
+	if isCountQuery {
 		if schema.NumFields() != 1 {
+			s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "invalid_count_schema")
 			return nil, nil, status.Error(codes.Internal, "COUNT query must return exactly one column")
 		}
 	}
 
-	// Create a channel to stream the results
-	stream := make(chan flight.StreamChunk)
+	// Create a new channel for the stream
+	stream := make(chan flight.StreamChunk, 16)
+
+	// Start streaming results in background
 	go func() {
 		defer close(stream)
 
+		firstChunkLogged := false
 		for chunk := range resultStream {
-			if chunk.Data == nil {
+			if chunk.Err != nil {
+				s.logger.Error().Err(chunk.Err).Msg("Error reading query results")
 				continue
 			}
 
+			record := chunk.Data
+			record.Retain() // Retain before sending to ensure it's not released prematurely
+
+			// Log details for COUNT(*) query's first data chunk
+			if isCountQuery && !firstChunkLogged && record.NumRows() > 0 {
+				s.logger.Info().
+					Str("query", query).
+					Str("record_schema", record.Schema().String()).
+					Int64("num_rows_in_chunk", record.NumRows()).
+					Msg("Logging first data chunk for COUNT query")
+
+				// Log the value of the first column of the first row for COUNT query
+				if record.NumCols() > 0 {
+					col := record.Column(0)
+					colField := record.Schema().Field(0) // Get field for name/type
+					s.logger.Info().Str("column_name", colField.Name).Str("column_type", colField.Type.String()).Int("column_len", col.Len()).Msg("COUNT query first column details")
+
+					if col.Len() > 0 {
+						switch c := col.(type) {
+						case *array.Int64:
+							s.logger.Info().Int64("count_value_int64", c.Value(0)).Msg("COUNT query first row value (Int64)")
+						case *array.Uint64:
+							s.logger.Info().Uint64("count_value_uint64", c.Value(0)).Msg("COUNT query first row value (Uint64)")
+						default:
+							s.logger.Info().Str("count_array_string", col.String()).Str("count_array_type_reflected", fmt.Sprintf("%T", col)).Msg("COUNT query first column value (generic)")
+						}
+					} else {
+						s.logger.Warn().Msg("COUNT query first column has no rows to log value from")
+					}
+				}
+				firstChunkLogged = true
+			}
+
 			// Send the record to the stream
-			stream <- chunk
+			stream <- flight.StreamChunk{Data: record}
 			s.logger.Debug().
-				Int64("rows", chunk.Data.NumRows()).
+				Int64("rows", record.NumRows()).
 				Msg("Sent record chunk to stream")
 		}
 	}()
@@ -683,7 +727,7 @@ func (s *FlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd flight
 	timer := s.metrics.StartTimer("flight_do_get_prepared_statement")
 	defer timer.Stop()
 
-	handle := string(cmd.GetPreparedStatementHandle())
+	handle := string(cmd.GetPreparedStatementHandle()) // This is the actual statement handle string
 	s.logger.Debug().Str("handle", handle).Msg("DoGetPreparedStatement")
 
 	// Get the parameter schema
@@ -726,7 +770,7 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
 	defer timer.Stop()
 
-	handle := string(cmd.GetPreparedStatementHandle())
+	handle := string(cmd.GetPreparedStatementHandle()) // This is the actual statement handle string
 	s.logger.Debug().
 		Str("handle", handle).
 		Msg("DoPutPreparedStatementQuery")

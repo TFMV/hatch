@@ -310,7 +310,7 @@ func (r *duckDBStreamingRepository) arrowToDuckDBType(dt arrow.DataType) string 
 		return r.arrowToDuckDBType(dt.Elem()) + "[]"
 	case *arrow.MapType:
 		keyType := r.arrowToDuckDBType(dt.KeyType())
-		valueType := r.arrowToDuckDBType(dt.ValueType())
+		valueType := r.arrowToDuckDBType(dt.ItemType())
 		return fmt.Sprintf("MAP(%s, %s)", keyType, valueType)
 	case *arrow.StructType:
 		var fields []string
