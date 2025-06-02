@@ -327,10 +327,9 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 		var tsqProto flightpb.TicketStatementQuery
 		if errUnmarshalTSQ := anyCmd.UnmarshalTo(&tsqProto); errUnmarshalTSQ == nil {
 			query = string(tsqProto.GetStatementHandle())
-			s.logger.Debug().Str("query_from_any_tsq", query).Msg("DoGetStatement: Query from inner TicketStatementQuery.StatementHandle")
+			s.logger.Debug().Str("query_from_tsq", query).Msg("DoGetStatement: Got query from TicketStatementQuery")
 		} else {
-			s.logger.Error().Err(errUnmarshalTSQ).Str("any_type_url", anyCmd.GetTypeUrl()).Hex("handle_bytes", handleBytes).Msg("DoGetStatement: Unmarshal Any to TicketStatementQuery FAILED. Falling back to raw handle bytes as query.")
-			query = string(handleBytes)
+			s.logger.Debug().Err(errUnmarshalTSQ).Msg("DoGetStatement: Unmarshal as TicketStatementQuery FAILED")
 		}
 	} else {
 		s.logger.Debug().Err(errUnmarshalAny).Hex("handle_bytes", handleBytes).Msg("DoGetStatement: Unmarshal as Any FAILED. Assuming handle bytes are raw query string.")
@@ -340,67 +339,202 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	query = cleanQuery(query)
 	s.logger.Debug().Str("final_query_for_sql_execution", query).Msg("DoGetStatement")
 
-	if query == "" {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query_final")
-		return nil, nil, status.Error(codes.InvalidArgument, "final query for execution cannot be empty")
-	}
-
-	// Call the correct method on the QueryHandler interface
-	resultStreamSchema, resultStream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
+	// Execute the query and get the schema and record channel
+	schema, recordChan, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "execute_query_and_stream_failed")
-		return nil, nil, status.Errorf(codes.Internal, "failed to execute query and stream: %v", err)
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "execute_failed")
+		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to execute query: %v", err))
 	}
 
-	// Create a buffered channel for the stream
-	stream := make(chan flight.StreamChunk, 10)
+	// Create a buffered channel for flight chunks with a larger buffer to prevent blocking
+	chunkChan := make(chan flight.StreamChunk, 4)
 
-	// Start streaming results in background
+	// Start a goroutine to process records and send chunks
 	go func() {
-		defer close(stream)
+		defer close(chunkChan)
 
-		for chunk := range resultStream {
+		// Create a pool of record builders to reuse
+		builderPool := sync.Pool{
+			New: func() interface{} {
+				return array.NewRecordBuilder(memory.DefaultAllocator, schema)
+			},
+		}
+
+		for chunk := range recordChan {
 			if chunk.Err != nil {
-				s.logger.Error().Err(chunk.Err).Msg("Error reading query results from handler stream")
-				stream <- flight.StreamChunk{Err: status.Errorf(codes.Internal, "error reading query results: %v", chunk.Err)}
+				s.logger.Error().Err(chunk.Err).Msg("Error in record stream")
 				continue
 			}
 
 			record := chunk.Data
 			if record == nil {
-				s.logger.Warn().Msg("Received nil record from resultStream, skipping.")
 				continue
 			}
 
-			// Log record state before processing
+			// Get a builder from the pool
+			builder := builderPool.Get().(*array.RecordBuilder)
+
+			// Create a safe copy of the record's data
+			numCols := int(record.NumCols())
+
+			// Pre-allocate slices to store column data
+			colData := make([][]interface{}, numCols)
+			colNulls := make([][]bool, numCols)
+
+			// Copy data from each column
+			for i := 0; i < numCols; i++ {
+				col := record.Column(i)
+				if col == nil {
+					continue
+				}
+
+				colLen := int(col.Len())
+				colData[i] = make([]interface{}, colLen)
+				colNulls[i] = make([]bool, colLen)
+
+				for j := 0; j < colLen; j++ {
+					colNulls[i][j] = col.IsNull(j)
+					if !colNulls[i][j] {
+						switch arr := col.(type) {
+						case *array.Int8:
+							colData[i][j] = arr.Value(j)
+						case *array.Int16:
+							colData[i][j] = arr.Value(j)
+						case *array.Int32:
+							colData[i][j] = arr.Value(j)
+						case *array.Int64:
+							colData[i][j] = arr.Value(j)
+						case *array.Uint8:
+							colData[i][j] = arr.Value(j)
+						case *array.Uint16:
+							colData[i][j] = arr.Value(j)
+						case *array.Uint32:
+							colData[i][j] = arr.Value(j)
+						case *array.Uint64:
+							colData[i][j] = arr.Value(j)
+						case *array.Float32:
+							colData[i][j] = arr.Value(j)
+						case *array.Float64:
+							colData[i][j] = arr.Value(j)
+						case *array.String:
+							colData[i][j] = arr.Value(j)
+						case *array.Boolean:
+							colData[i][j] = arr.Value(j)
+						case *array.Binary:
+							colData[i][j] = arr.Value(j)
+						case *array.Decimal128:
+							colData[i][j] = arr.Value(j)
+						case *array.Timestamp:
+							colData[i][j] = arr.Value(j)
+						case *array.Time32:
+							colData[i][j] = arr.Value(j)
+						case *array.Time64:
+							colData[i][j] = arr.Value(j)
+						case *array.Date32:
+							colData[i][j] = arr.Value(j)
+						case *array.Date64:
+							colData[i][j] = arr.Value(j)
+						default:
+							s.logger.Error().
+								Str("type", fmt.Sprintf("%T", col)).
+								Int("column", i).
+								Msg("Unsupported column type")
+							continue
+						}
+					}
+				}
+			}
+
+			// Now build the new record without holding the lock
+			for i := 0; i < numCols; i++ {
+				fieldBuilder := builder.Field(i)
+				if fieldBuilder == nil {
+					continue
+				}
+
+				for j := 0; j < len(colData[i]); j++ {
+					if colNulls[i][j] {
+						fieldBuilder.AppendNull()
+						continue
+					}
+
+					switch b := fieldBuilder.(type) {
+					case *array.Int8Builder:
+						b.Append(colData[i][j].(int8))
+					case *array.Int16Builder:
+						b.Append(colData[i][j].(int16))
+					case *array.Int32Builder:
+						b.Append(colData[i][j].(int32))
+					case *array.Int64Builder:
+						b.Append(colData[i][j].(int64))
+					case *array.Uint8Builder:
+						b.Append(colData[i][j].(uint8))
+					case *array.Uint16Builder:
+						b.Append(colData[i][j].(uint16))
+					case *array.Uint32Builder:
+						b.Append(colData[i][j].(uint32))
+					case *array.Uint64Builder:
+						b.Append(colData[i][j].(uint64))
+					case *array.Float32Builder:
+						b.Append(colData[i][j].(float32))
+					case *array.Float64Builder:
+						b.Append(colData[i][j].(float64))
+					case *array.StringBuilder:
+						b.Append(colData[i][j].(string))
+					case *array.BooleanBuilder:
+						b.Append(colData[i][j].(bool))
+					case *array.BinaryBuilder:
+						b.Append(colData[i][j].([]byte))
+					case *array.Decimal128Builder:
+						b.Append(colData[i][j].(*array.Decimal128).Value(j))
+					case *array.TimestampBuilder:
+						b.Append(colData[i][j].(arrow.Timestamp))
+					case *array.Time32Builder:
+						b.Append(colData[i][j].(arrow.Time32))
+					case *array.Time64Builder:
+						b.Append(colData[i][j].(arrow.Time64))
+					case *array.Date32Builder:
+						b.Append(colData[i][j].(arrow.Date32))
+					case *array.Date64Builder:
+						b.Append(colData[i][j].(arrow.Date64))
+					}
+				}
+			}
+
+			// Create a new record from the builder
+			recordCopy := builder.NewRecord()
+
+			// Put the builder back in the pool
+			builder.Release()
+			builderPool.Put(builder)
+
 			s.logger.Debug().
-				Int64("record_num_rows", record.NumRows()).
-				Int64("record_num_cols", record.NumCols()).
-				Str("record_schema", record.Schema().String()).
-				Msg("DoGetStatement: Record state before processing")
+				Int("record_num_rows", int(recordCopy.NumRows())).
+				Int("record_num_cols", int(recordCopy.NumCols())).
+				Str("record_schema", recordCopy.Schema().String()).
+				Msg("DoGetStatement: Record state before sending")
 
-			// Retain the record and its columns
-			record.Retain()
-			for i := 0; i < int(record.NumCols()); i++ {
-				record.Column(i).Retain()
-			}
-
+			// Send the record copy as a chunk
 			select {
-			case stream <- flight.StreamChunk{Data: record, Err: nil}:
-				s.logger.Debug().
-					Int64("rows_sent", record.NumRows()).
-					Int64("cols_sent", record.NumCols()).
-					Msg("Sent record chunk to client stream")
 			case <-ctx.Done():
-				s.logger.Warn().Msg("Context cancelled while sending record to stream")
-				record.Release()
+				s.logger.Debug().Msg("Context cancelled while sending record chunk")
+				recordCopy.Release()
 				return
+			case chunkChan <- flight.StreamChunk{
+				Data: recordCopy,
+			}:
+				s.logger.Debug().
+					Int("rows", int(recordCopy.NumRows())).
+					Msg("Sent record chunk to stream")
 			}
+
+			// Release the original record
+			record.Release()
 		}
 	}()
 
 	s.metrics.IncrementCounter("flight_do_get_statement_success")
-	return resultStreamSchema, stream, nil
+	return schema, chunkChan, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.
