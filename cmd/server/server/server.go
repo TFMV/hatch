@@ -314,111 +314,122 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	timer := s.metrics.StartTimer("flight_do_get_statement")
 	defer timer.Stop()
 
-	// The ticket.GetStatementHandle() should contain bytes of a marshaled anypb.Any wrapping flightpb.TicketStatementQuery
-	epTicketBytes := ticket.GetStatementHandle()
-	s.logger.Debug().Hex("ep_ticket_bytes_recv", epTicketBytes).Int("len", len(epTicketBytes)).Msg("DoGetStatement: received endpoint ticket bytes in handle")
+	handleBytes := ticket.GetStatementHandle()
+	s.logger.Debug().Hex("received_handle_bytes", handleBytes).Int("len", len(handleBytes)).Msg("DoGetStatement: initial handle bytes received")
 
+	var query string
 	var anyCmd anypb.Any
-	if err := proto.Unmarshal(epTicketBytes, &anyCmd); err != nil {
-		s.logger.Error().Err(err).Str("ep_ticket_bytes_str", string(epTicketBytes)).Msg("DoGetStatement: failed to unmarshal handle as Any")
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_any_from_handle_failed")
-		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal handle as Any: %v. Ticket bytes: '%s'", err, string(epTicketBytes))
+
+	// Attempt to unmarshal handleBytes as Any -> TicketStatementQuery
+	// This path is taken if handleBytes contains a marshaled Any message
+	// wrapping a TicketStatementQuery, which itself contains the raw SQL in its StatementHandle.
+	if errUnmarshalAny := proto.Unmarshal(handleBytes, &anyCmd); errUnmarshalAny == nil {
+		var tsqProto flightpb.TicketStatementQuery
+		if errUnmarshalTSQ := anyCmd.UnmarshalTo(&tsqProto); errUnmarshalTSQ == nil {
+			s.logger.Debug().
+				Str("query_from_any_tsq", query).
+				Msg("DoGetStatement: Query from inner TicketStatementQuery.StatementHandle")
+			query = string(tsqProto.GetStatementHandle())
+		} else {
+			// Failed to unmarshal the content of Any as TicketStatementQuery.
+			// This is unexpected if Unmarshal to Any succeeded and it was supposed to be a TicketStatementQuery.
+			// Log the error and fall back to treating the original handleBytes as a raw query string.
+			// This might occur if the Any message contains a different, unexpected proto type.
+			s.logger.Error().Err(errUnmarshalTSQ).Str("any_type_url", anyCmd.GetTypeUrl()).Hex("handle_bytes", handleBytes).Msg("DoGetStatement: Unmarshal Any to TicketStatementQuery FAILED. Falling back to raw handle bytes as query.")
+			query = string(handleBytes) // Fallback: treat original bytes as query.
+		}
+	} else {
+		// Failed to unmarshal handleBytes as Any.
+		// Assume handleBytes is already the raw query string, as expected if BaseServer.DoGet
+		// successfully unwrapped the Any(TicketStatementQuery) and provided the inner StatementHandle.
+		s.logger.Debug().Err(errUnmarshalAny).Hex("handle_bytes", handleBytes).Msg("DoGetStatement: Unmarshal as Any FAILED. Assuming handle bytes are raw query string.")
+		query = string(handleBytes)
 	}
 
-	var ticketStatementQueryProto flightpb.TicketStatementQuery
-	if err := anyCmd.UnmarshalTo(&ticketStatementQueryProto); err != nil {
-		s.logger.Error().Err(err).Str("any_type_url", anyCmd.GetTypeUrl()).Msg("DoGetStatement: failed to unmarshal Any's payload to TicketStatementQuery")
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "unmarshal_ticket_stmt_query_from_any_failed")
-		return nil, nil, status.Errorf(codes.InvalidArgument, "failed to unmarshal Any's payload to TicketStatementQuery: %v", err)
-	}
-
-	// The actual query is in the StatementHandle of the unmarshaled TicketStatementQuery
-	queryBytes := ticketStatementQueryProto.GetStatementHandle()
-	query := string(queryBytes)
 	query = cleanQuery(query)
+	s.logger.Debug().Str("final_query_for_sql_execution", query).Msg("DoGetStatement")
 
 	if query == "" {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query_from_ticket_handle")
-		return nil, nil, status.Error(codes.InvalidArgument, "query from TicketStatementQuery.StatementHandle cannot be empty")
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "empty_query_final")
+		return nil, nil, status.Error(codes.InvalidArgument, "final query for execution cannot be empty")
 	}
 
-	s.logger.Debug().
-		Str("query", query).
-		Msg("DoGetStatement from unmarshaled TicketStatementQuery handle")
+	s.logger.Debug().Str("query", query).Msg("DoGetStatement using processed query from handle")
 
-	// Execute the query and get the results
-	schema, resultStream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
+	// Call the correct method on the QueryHandler interface
+	resultStreamSchema, resultStream, err := s.queryHandler.ExecuteQueryAndStream(ctx, query)
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "execute_failed")
-		return nil, nil, err
-	}
-
-	// For COUNT queries, ensure we have a single column
-	isCountQuery := strings.Contains(strings.ToUpper(query), "COUNT(*)")
-	if isCountQuery {
-		if schema.NumFields() != 1 {
-			s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "invalid_count_schema")
-			return nil, nil, status.Error(codes.Internal, "COUNT query must return exactly one column")
-		}
+		s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "execute_query_and_stream_failed")
+		return nil, nil, status.Errorf(codes.Internal, "failed to execute query and stream: %v", err)
 	}
 
 	// Create a new channel for the stream
-	stream := make(chan flight.StreamChunk, 16)
+	stream := make(chan flight.StreamChunk, 10)
 
 	// Start streaming results in background
 	go func() {
 		defer close(stream)
 
-		firstChunkLogged := false
 		for chunk := range resultStream {
 			if chunk.Err != nil {
-				s.logger.Error().Err(chunk.Err).Msg("Error reading query results")
+				s.logger.Error().Err(chunk.Err).Msg("Error reading query results from handler stream")
+				// Send the error on the stream so the client can be aware
+				stream <- flight.StreamChunk{Err: status.Errorf(codes.Internal, "error reading query results: %v", chunk.Err)}
 				continue
 			}
 
 			record := chunk.Data
-			record.Retain() // Retain before sending to ensure it's not released prematurely
-
-			// Log details for COUNT(*) query's first data chunk
-			if isCountQuery && !firstChunkLogged && record.NumRows() > 0 {
-				s.logger.Info().
-					Str("query", query).
-					Str("record_schema", record.Schema().String()).
-					Int64("num_rows_in_chunk", record.NumRows()).
-					Msg("Logging first data chunk for COUNT query")
-
-				// Log the value of the first column of the first row for COUNT query
-				if record.NumCols() > 0 {
-					col := record.Column(0)
-					colField := record.Schema().Field(0) // Get field for name/type
-					s.logger.Info().Str("column_name", colField.Name).Str("column_type", colField.Type.String()).Int("column_len", col.Len()).Msg("COUNT query first column details")
-
-					if col.Len() > 0 {
-						switch c := col.(type) {
-						case *array.Int64:
-							s.logger.Info().Int64("count_value_int64", c.Value(0)).Msg("COUNT query first row value (Int64)")
-						case *array.Uint64:
-							s.logger.Info().Uint64("count_value_uint64", c.Value(0)).Msg("COUNT query first row value (Uint64)")
-						default:
-							s.logger.Info().Str("count_array_string", col.String()).Str("count_array_type_reflected", fmt.Sprintf("%T", col)).Msg("COUNT query first column value (generic)")
-						}
-					} else {
-						s.logger.Warn().Msg("COUNT query first column has no rows to log value from")
-					}
-				}
-				firstChunkLogged = true
+			if record == nil {
+				s.logger.Warn().Msg("Received nil record from resultStream, skipping.")
+				continue
 			}
 
-			// Send the record to the stream
-			stream <- flight.StreamChunk{Data: record}
 			s.logger.Debug().
-				Int64("rows", record.NumRows()).
-				Msg("Sent record chunk to stream")
+				Int64("record_num_rows_pre_retain", record.NumRows()).
+				Int64("record_num_cols_pre_retain", record.NumCols()).
+				Str("record_schema_pre_retain_string", record.Schema().String()).
+				Int("record_schema_pre_retain_fields", record.Schema().NumFields()).
+				Msg("DoGetStatement: Record state immediately from channel (pre-explicit-Retain)")
+
+			record.Retain() // Retain before sending to ensure it's not released prematurely
+
+			// Detailed logging for each record before sending
+			s.logger.Debug().
+				Int64("record_num_rows", record.NumRows()).
+				Int64("record_num_cols", record.NumCols()).
+				Str("record_schema_on_send", record.Schema().String()).
+				Msg("DoGetStatement: Preparing to send record chunk")
+
+			if record.NumRows() > 0 && record.Schema().NumFields() > 0 && record.NumCols() == 0 {
+				s.logger.Error().Msg("CRITICAL: Record has rows and schema fields, but NumCols is 0 before sending to client stream!")
+			}
+
+			// Log if it's a COUNT query and has bad NumCols
+			if strings.HasPrefix(strings.ToUpper(query), "SELECT COUNT") && record.NumCols() != 1 && record.Schema().NumFields() == 1 {
+				s.logger.Error().
+					Int64("num_cols", record.NumCols()).
+					Int("schema_fields", record.Schema().NumFields()).
+					Msg("CRITICAL: COUNT query record has incorrect NumCols before sending to client stream!")
+			}
+
+			select {
+			case stream <- flight.StreamChunk{Data: record, Err: nil}:
+				s.logger.Debug().Int64("rows_sent", record.NumRows()).Msg("Sent record chunk to client stream")
+				// record.Release() was implicitly handled by the defer, but explicit is better if loop continues
+			case <-ctx.Done():
+				s.logger.Warn().Msg("DoGetStatement: context done before sending chunk to client, releasing record.")
+				// record.Release() // Release if not sent
+				// return // Exit goroutine if context is done
+			}
+			// CRUCIAL: Release the record after it has been sent (or failed to send due to ctx done)
+			// This balances the record.Retain() made at the start of this iteration.
+			record.Release()
 		}
+		s.logger.Debug().Msg("DoGetStatement: resultStream from handler closed, closing client stream.")
 	}()
 
 	s.metrics.IncrementCounter("flight_do_get_statement_success")
-	return schema, stream, nil
+	return resultStreamSchema, stream, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.

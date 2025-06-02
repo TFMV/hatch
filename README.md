@@ -5,6 +5,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> This project is in early development. Please feel free to experiment. Any contributions are appreciated.
+
 ## The Big Idea
 
 A great engine shouldn’t be gated by heavyweight infra.
@@ -13,19 +15,6 @@ Hatch keeps DuckDB’s magic small, open, and composable—so your data can fly 
 Spin up. Query. Stream. Done.
 
 Embedded analytics just broke orbit.
-
----
-
-## ✨ Highlights
-
-| Capability               | Details                                                                |
-| ------------------------ | ---------------------------------------------------------------------- |
-| **Flight SQL 1.0**       | Full‑spec read/write, prepared statements, transactions                |
-| **Turbo Streaming**      | Arrow IPC rows at > **20 M rows/s** on commodity hardware              |
-| **Pluggable Middleware** | Auth (JWT/OAuth2), metrics (Prometheus), tracing (OpenTelemetry)       |
-| **Modern Go 22**         | Context‑first APIs, generics‑powered type safety, dependency injection |
-| **Hot‑reload Config**    | YAML or ENV, zero‑downtime reload via `SIGHUP`                         |
-| **Batteries Included**   | Docker image, Helm chart, golden‑path integration tests                |
 
 ---
 

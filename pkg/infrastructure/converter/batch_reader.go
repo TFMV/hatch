@@ -128,19 +128,44 @@ func (r *BatchReader) cleanup() {
 		r.rows.Close()
 		r.rows = nil
 	}
-	if r.record != nil {
-		r.record.Release()
-		r.record = nil
-	}
 	if r.builder != nil {
 		r.builder.Release()
 		r.builder = nil
+	}
+	if r.record != nil {
+		r.logger.Debug().
+			Int("record_num_cols_in_cleanup_before_nil", int(r.record.NumCols())).
+			Msg("BatchReader.cleanup: r.record is not nil, but will not be released here. Setting to nil.")
+		r.record = nil // Ensure we don't hold a reference after cleanup.
 	}
 }
 
 // Record returns the current record batch.
 func (r *BatchReader) Record() arrow.Record {
-	return r.record
+	if r.record == nil {
+		r.logger.Debug().Msg("BatchReader.Record() called, r.record is nil")
+		return nil
+	}
+
+	// Return a NewSlice. This creates a new Record instance with its own
+	// .columns metadata, sharing the underlying (ref-counted) array data.
+	// This prevents the BatchReader's internal r.record.Release() in the next
+	// r.Next() call from nilling out the columns of the record instance
+	// that the consumer (ExecuteQueryStream) has.
+	r.record.Retain() // Ensure r.record and its columns are valid for slicing.
+	newRecSlice := r.record.NewSlice(0, r.record.NumRows())
+	// Release the Retain made specifically for slicing.
+	// The BatchReader's main lifecycle for r.record (creation in Next, Release in subsequent Next)
+	// remains, but it won't affect newRecSlice's .columns field.
+	r.record.Release()
+
+	r.logger.Debug().
+		Int("slice_num_cols", int(newRecSlice.NumCols())).
+		Int("slice_schema_fields", newRecSlice.Schema().NumFields()).
+		Int64("slice_num_rows", newRecSlice.NumRows()).
+		Msg("BatchReader.Record: State of newRecSlice before returning")
+
+	return newRecSlice
 }
 
 // Err returns any error that occurred during reading.
@@ -150,44 +175,75 @@ func (r *BatchReader) Err() error {
 
 // Next reads the next batch of rows.
 func (r *BatchReader) Next() bool {
+	if r.err != nil {
+		return false
+	}
+
 	if r.record != nil {
+		r.logger.Debug().
+			Int("internal_rec_num_cols_pre_release", int(r.record.NumCols())).
+			Int64("internal_rec_num_rows_pre_release", r.record.NumRows()).
+			Msg("BatchReader.Next: State of internal r.record before Release")
 		r.record.Release()
 		r.record = nil
 	}
 
-	rows := 0
-	start := time.Now()
+	// DIAGNOSTIC: Release and create a new builder for each record batch (even if batch is 1 row)
+	if r.builder != nil {
+		r.builder.Release()
+	}
+	r.builder = array.NewRecordBuilder(r.allocator, r.schema)
+	// Ensure the new builder is retained if the BatchReader itself is retained.
+	// No, builder itself doesn't have Retain/Release like a Record/Array.
 
-	for rows < r.batchSize && r.rows.Next() {
+	rowsProcessedInBatch := 0
+	for i := 0; i < r.batchSize; i++ {
+		if !r.rows.Next() {
+			if i == 0 { // No rows were read in this attempt to fill a batch
+				r.err = r.rows.Err()
+				if r.err == nil { // No error, but no rows means end of result set
+					r.logger.Debug().Msg("BatchReader.Next: No more rows in r.rows.Next(), end of data.")
+					// r.cleanup() // No, cleanup is for when the whole reader is done.
+				}
+				return false // No rows in this batch, and no more rows available
+			}
+			break // End of result set, but some rows were processed for this batch
+		}
+
 		if err := r.rows.Scan(r.rowDest...); err != nil {
 			r.err = errors.Wrap(err, errors.CodeQueryFailed, "failed to scan row")
 			return false
 		}
 
-		for i, dest := range r.rowDest {
-			if err := r.appendValue(i, dest); err != nil {
-				r.err = errors.Wrapf(err, errors.CodeInternal, "failed to append value for column %d", i)
+		for colIdx, val := range r.rowDest {
+			if err := r.appendValue(colIdx, val); err != nil {
+				r.err = errors.Wrapf(err, errors.CodeInternal, "failed to append value for column %d", colIdx)
 				return false
 			}
 		}
-
-		rows++
+		rowsProcessedInBatch++
 	}
 
-	if rows > 0 {
+	if rowsProcessedInBatch > 0 {
 		r.record = r.builder.NewRecord()
 		r.logger.Debug().
-			Int("rows", rows).
-			Dur("duration", time.Since(start)).
-			Msg("Read batch")
+			Int("rows_in_batch", rowsProcessedInBatch).
+			Int("record_num_cols_at_creation", int(r.record.NumCols())).
+			Int("record_schema_fields_at_creation", r.record.Schema().NumFields()).
+			Msg("Read batch and created record (with new builder each time - DIAGNOSTIC)")
+	} else {
+		// This case should be caught by r.rows.Next() returning false earlier if no rows were processed.
+		// If we reach here, it implies batchSize might be 0 or an issue in loop logic.
+		r.logger.Debug().Msg("BatchReader.Next: No rows processed in the current batch attempt.")
+		return false // No rows were actually processed to form a record
 	}
 
 	if err := r.rows.Err(); err != nil {
-		r.err = errors.Wrap(err, errors.CodeQueryFailed, "rows iteration error")
+		r.err = err
 		return false
 	}
 
-	return rows > 0
+	return true
 }
 
 // appendValue appends a scanned value to the appropriate builder.
