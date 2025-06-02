@@ -273,7 +273,6 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 
 			// Create a copy of the record to avoid data race
 			recordCopy := record.NewSlice(0, record.NumRows())
-			defer recordCopy.Release()
 
 			if recordCopy.NumRows() > 0 {
 				// Send the chunk

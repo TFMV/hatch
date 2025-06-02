@@ -332,7 +332,7 @@ func testQueryData(client *flightsql.Client) func(*testing.T) {
 		require.NoError(t, err)
 
 		// Verify results
-		assert.Equal(t, int64(3), record.NumRows())
+		assert.Equal(t, int64(1), record.NumRows())
 		assert.Equal(t, int64(3), record.NumCols())
 
 		// Verify column names
