@@ -263,35 +263,42 @@ func testCreateTable(client *flightsql.Client) func(*testing.T) {
 func testInsertData(client *flightsql.Client) func(*testing.T) {
 	return func(t *testing.T) {
 		ctx := context.Background()
-
-		// Create prepared statement
-		query := "INSERT INTO test_flight (id, name, value) VALUES (?, ?, ?)"
-		info, err := client.Prepare(ctx, query)
+		prep, err := client.Prepare(ctx, "INSERT INTO test_flight (id, name, value) VALUES (?, ?, ?)")
 		require.NoError(t, err)
-		require.NotNil(t, info)
+		defer prep.Close(ctx)
 
-		// Create parameter record
-		paramSchema := info.ParameterSchema()
-		builder := array.NewRecordBuilder(memory.DefaultAllocator, paramSchema)
+		// Create parameter record for all three rows at once
+		builder := array.NewRecordBuilder(memory.DefaultAllocator, prep.ParameterSchema())
 		defer builder.Release()
 
-		// Set parameter values
-		builder.Field(0).(*array.Int64Builder).Append(1)
-		builder.Field(1).(*array.StringBuilder).Append("test")
-		builder.Field(2).(*array.Float64Builder).Append(3.14)
+		// Set values for all three rows
+		builder.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil)
+		builder.Field(1).(*array.StringBuilder).AppendValues([]string{"test1", "test2", "test3"}, nil)
+		builder.Field(2).(*array.Int64Builder).AppendValues([]int64{11, 22, 33}, nil)
 
-		// Create the record
-		record := builder.NewRecord()
-		defer record.Release()
+		paramRecord := builder.NewRecord()
+		defer paramRecord.Release()
 
-		// Execute the prepared statement
-		rowsAffected, err := info.ExecuteUpdate(ctx)
+		// Set parameters and execute
+		prep.SetParameters(paramRecord)
+		rowsAffected, err := prep.ExecuteUpdate(ctx)
 		require.NoError(t, err)
-		require.Equal(t, int64(1), rowsAffected)
+		require.Equal(t, int64(3), rowsAffected)
 
-		// Close the prepared statement
-		err = info.Close(ctx)
+		// Verify insertion
+		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight")
 		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.NotEmpty(t, info.Endpoint)
+		require.NotNil(t, info.Endpoint[0].Ticket)
+
+		reader, err := client.DoGet(ctx, info.Endpoint[0].Ticket)
+		require.NoError(t, err)
+		defer reader.Release()
+
+		record, err := reader.Read()
+		require.NoError(t, err)
+		require.Equal(t, int64(3), record.Column(0).(*array.Int64).Value(0))
 	}
 }
 
@@ -337,8 +344,9 @@ func testUpdateData(client *flightsql.Client) func(*testing.T) {
 		ctx := context.Background()
 
 		// Update data
-		_, err := client.Execute(ctx, "UPDATE test_flight SET value = 4.4 WHERE id = 1")
+		rowsAffected, err := client.ExecuteUpdate(ctx, "UPDATE test_flight SET value = 4.4 WHERE id = 1")
 		require.NoError(t, err)
+		require.Equal(t, int64(1), rowsAffected)
 
 		// Verify update
 		info, err := client.Execute(ctx, "SELECT value FROM test_flight WHERE id = 1")
@@ -359,8 +367,9 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 		ctx := context.Background()
 
 		// Delete data
-		_, err := client.Execute(ctx, "DELETE FROM test_flight WHERE id = 2")
+		rowsAffected, err := client.ExecuteUpdate(ctx, "DELETE FROM test_flight WHERE id = 2")
 		require.NoError(t, err)
+		require.Equal(t, int64(1), rowsAffected)
 
 		// Verify deletion
 		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight")
@@ -376,4 +385,107 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), record.Column(0).(*array.Int64).Value(0))
 	}
+}
+
+func TestQueryOperations(t *testing.T) {
+	// Create test configuration
+	cfg := config.DefaultConfig()
+	cfg.Database = ":memory:" // Use in-memory database for tests
+	cfg.LogLevel = "debug"
+
+	// Create logger
+	logger := zerolog.New(zerolog.NewTestWriter(t)).With().Timestamp().Logger()
+
+	// Create metrics collector
+	metrics := NewTestMetricsCollector()
+
+	// Create server
+	srv, err := server.New(cfg, logger, metrics)
+	require.NoError(t, err)
+
+	// Create gRPC server
+	grpcServer := grpc.NewServer(srv.GetMiddleware()...)
+	srv.Register(grpcServer)
+
+	// Create listener
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	// Start server
+	go func() {
+		if serveErr := grpcServer.Serve(listener); serveErr != nil && serveErr != grpc.ErrServerStopped {
+			logger.Fatal().Err(serveErr).Msg("TestQueryOperations gRPC server failed")
+		}
+	}()
+
+	serverAddr := listener.Addr().String()
+	logger.Info().Str("address", serverAddr).Msg("TestQueryOperations server started")
+
+	// Create Flight SQL client
+	var client *flightsql.Client
+	var errClient error
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+
+	for i := 0; i < 5; i++ {
+		client, errClient = flightsql.NewClient(serverAddr, nil, nil, dialOpts...)
+		if errClient == nil {
+			pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, errPing := client.GetSqlInfo(pingCtx, []flightsql.SqlInfo{})
+			pingCancel()
+			if errPing == nil {
+				break
+			}
+			errClient = fmt.Errorf("flightsql.NewClient succeeded but GetSqlInfo failed: %w", errPing)
+			if client != nil {
+				client.Close()
+			}
+		}
+		logger.Warn().Err(errClient).Int("attempt", i+1).Str("address", serverAddr).Msg("Failed to create client, retrying...")
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	require.NoError(t, errClient, "Failed to create client after multiple retries")
+	require.NotNil(t, client, "Client is nil after successful creation attempt")
+	defer client.Close()
+
+	// Create test table
+	ctx := context.Background()
+	createQuery := "CREATE TABLE test_flight (id BIGINT, name VARCHAR, value DOUBLE)"
+	_, err = client.Execute(ctx, createQuery)
+	require.NoError(t, err)
+
+	// Insert test data first
+	insertQuery := "INSERT INTO test_flight (id, name, value) VALUES (1, 'test', 1.1)"
+	rowsAffected, err := client.ExecuteUpdate(ctx, insertQuery)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rowsAffected)
+
+	t.Run("DoPutCommandStatementUpdate", func(t *testing.T) {
+		rowsAffected, err := client.ExecuteUpdate(ctx, "DELETE FROM test_flight WHERE id = 1")
+		require.NoError(t, err)
+		require.Equal(t, int64(1), rowsAffected)
+
+		// Verify deletion
+		info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_flight WHERE id = 1")
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		require.NotEmpty(t, info.Endpoint)
+		require.NotNil(t, info.Endpoint[0].Ticket)
+
+		reader, err := client.DoGet(ctx, info.Endpoint[0].Ticket)
+		require.NoError(t, err)
+		defer reader.Release()
+
+		record, err := reader.Read()
+		require.NoError(t, err)
+		require.Equal(t, int64(0), record.Column(0).(*array.Int64).Value(0))
+	})
+
+	// Cleanup
+	grpcServer.GracefulStop()
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	srv.Close(closeCtx)
+	logger.Info().Msg("TestQueryOperations server stopped")
 }

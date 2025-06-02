@@ -556,7 +556,7 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	}
 
 	// Execute the prepared statement with parameters
-	_, err = s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	_, _, err = s.preparedStatementHandler.ExecuteQuery(ctx, string(cmd.GetPreparedStatementHandle()), record)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
 		return status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
