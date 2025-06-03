@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -17,6 +20,8 @@ import (
 	"github.com/TFMV/hatch/cmd/server/server"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/flight"
+	"google.golang.org/grpc"
 )
 
 // isCI returns true if running in a CI environment
@@ -474,4 +479,194 @@ func BenchmarkLargeDataMovement(b *testing.B) {
 	cmd = &statementUpdate{query: dropQuery}
 	_, err = srv.DoPutCommandStatementUpdate(ctx, cmd)
 	require.NoError(b, err)
+}
+
+// startServer starts a Flight server on a random port and returns the server and address
+func startServer(b *testing.B) (*server.FlightSQLServer, string) {
+	// Find a free port
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(b, err, "Failed to find free port")
+	addr := listener.Addr().String()
+	listener.Close()
+
+	// Create server config
+	cfg := &config.Config{
+		Database:          ":memory:",
+		ConnectionTimeout: 30 * time.Second,
+		QueryTimeout:      5 * time.Minute,
+		ConnectionPool: config.ConnectionPoolConfig{
+			MaxOpenConnections: 25,
+			MaxIdleConnections: 5,
+			ConnMaxLifetime:    30 * time.Minute,
+			ConnMaxIdleTime:    10 * time.Minute,
+			HealthCheckPeriod:  1 * time.Minute,
+		},
+		Cache: config.CacheConfig{
+			Enabled: true,
+			MaxSize: 100 * 1024 * 1024,
+		},
+		SafeCopy: false,
+	}
+
+	// Create server
+	logger := zerolog.Nop()
+	srv, err := server.New(cfg, logger, &noopMetrics{})
+	require.NoError(b, err, "Failed to create server")
+
+	// Create gRPC server and start it
+	grpcServer := grpc.NewServer()
+	srv.Register(grpcServer)
+
+	// Create new listener for actual server
+	listener, err = net.Listen("tcp", addr)
+	require.NoError(b, err, "Failed to create listener")
+
+	// Start server in background
+	go func() {
+		if err := grpcServer.Serve(listener); err != nil {
+			b.Logf("Server stopped: %v", err)
+		}
+	}()
+
+	return srv, addr
+}
+
+// connectClient creates a Flight client connected to the given address
+func connectClient(b *testing.B, addr string) flight.Client {
+	// Set up client connection
+	ctx := context.Background()
+	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure())
+	require.NoError(b, err, "Failed to dial server")
+
+	// Create client
+	client := flight.NewClientFromConn(conn, nil)
+	return client
+}
+
+// BenchmarkFlightTransfer benchmarks data transfer through Flight
+func BenchmarkFlightTransfer(b *testing.B) {
+	// Start server
+	srv, addr := startServer(b)
+	defer srv.Close(context.Background())
+
+	// Connect client
+	client := connectClient(b, addr)
+
+	// Create test data sizes
+	sizes := []struct {
+		name string
+		rows int
+	}{
+		{"Small", 1000},
+		{"Medium", 100000},
+		{"Large", 1000000},
+	}
+
+	for _, size := range sizes {
+		b.Run(fmt.Sprintf("Rows=%d", size.rows), func(b *testing.B) {
+			ctx := context.Background()
+
+			// Create test table with specified number of rows
+			createQuery := fmt.Sprintf(`
+				CREATE TABLE test_data AS 
+				SELECT 
+					i AS id,
+					'name-' || i::VARCHAR AS name,
+					random() * 1000 AS value,
+					(now() + (i * interval '1 second'))::TIMESTAMP AS timestamp,
+					random()::VARCHAR AS text_data,
+					(random() > 0.5) AS bool_data,
+					random() * 1.0 AS double_data
+				FROM range(1, %d) AS t(i)
+			`, size.rows)
+
+			cmd := &statementUpdate{query: createQuery}
+			_, err := srv.DoPutCommandStatementUpdate(ctx, cmd)
+			require.NoError(b, err, "Failed to create test data")
+
+			// Verify row count
+			verifyQuery := "SELECT COUNT(*) FROM test_data"
+			_, recordChan, err := srv.QueryHandler().ExecuteQueryAndStream(ctx, verifyQuery)
+			require.NoError(b, err)
+
+			var count int64
+			for record := range recordChan {
+				if record.Data != nil {
+					count = record.Data.Column(0).(*array.Int64).Value(0)
+					record.Data.Release()
+				}
+			}
+			require.Equal(b, int64(size.rows), count, "Wrong number of rows created")
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				// Get FlightInfo
+				desc := &flight.FlightDescriptor{
+					Type: flight.DescriptorCMD,
+					Cmd:  []byte("SELECT * FROM test_data"),
+				}
+				info, err := client.GetFlightInfo(ctx, desc)
+				require.NoError(b, err)
+
+				// Track metrics
+				var (
+					totalBytes int64
+					totalRows  int64
+					peakAlloc  uint64
+				)
+
+				// Get data stream
+				for _, endpoint := range info.Endpoint {
+					stream, err := client.DoGet(ctx, endpoint.Ticket)
+					require.NoError(b, err)
+
+					reader, err := flight.NewRecordReader(stream)
+					require.NoError(b, err)
+					defer reader.Release()
+
+					for {
+						record, err := reader.Read()
+						if err == io.EOF {
+							break
+						}
+						require.NoError(b, err)
+
+						totalRows += record.NumRows()
+
+						// Calculate memory size
+						for j := 0; j < int(record.NumCols()); j++ {
+							col := record.Column(j)
+							totalBytes += int64(col.Data().Len())
+						}
+
+						// Track peak allocation
+						var m runtime.MemStats
+						runtime.ReadMemStats(&m)
+						if m.Alloc > peakAlloc {
+							peakAlloc = m.Alloc
+						}
+
+						record.Release()
+					}
+				}
+
+				// Verify row count
+				require.Equal(b, int64(size.rows), totalRows, "Wrong number of rows received")
+
+				// Report metrics
+				b.ReportMetric(float64(totalBytes)/float64(b.N), "bytes/op")
+				b.ReportMetric(float64(totalRows)/float64(b.N), "rows/op")
+				b.ReportMetric(float64(peakAlloc)/(1024*1024), "peak_mb")
+				b.ReportMetric(float64(totalBytes)/(1024*1024*float64(b.Elapsed().Seconds())), "mb/sec")
+			}
+
+			// Clean up
+			dropQuery := "DROP TABLE test_data"
+			cmd = &statementUpdate{query: dropQuery}
+			_, err = srv.DoPutCommandStatementUpdate(ctx, cmd)
+			require.NoError(b, err, "Failed to drop test table")
+		})
+	}
 }

@@ -13,6 +13,8 @@ Hatch keeps DuckDB's magic small, open, and composable so your data can fly wher
 
 ---
 
+> This project is in early development. It may change, break, or evolve quickly. Contributions, ideas, and experiments are welcome
+
 ## 🙋 Why Hatch Exists
 
 ### 1. Arrow‑Native Networking Is Inevitable  
@@ -34,12 +36,6 @@ Want column‑level ACLs? Write a middleware.
 Need OpenTelemetry spans? Drop in an interceptor.  
 Curious about WASM UDFs? Fork and go wild.  
 Hatch is scaffolding, not a silo.
-
----
-
-## 🛩️ Performance
-
-For detailed performance benchmarks, see [benchmarks.md](benchmarks.md).
 
 ---
 
