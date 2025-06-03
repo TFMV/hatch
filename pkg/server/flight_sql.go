@@ -12,11 +12,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/TFMV/flight/pkg/cache"
-	"github.com/TFMV/flight/pkg/handlers"
-	"github.com/TFMV/flight/pkg/infrastructure/converter"
-	"github.com/TFMV/flight/pkg/infrastructure/metrics"
-	"github.com/TFMV/flight/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/cache"
+	"github.com/TFMV/hatch/pkg/handlers"
+	"github.com/TFMV/hatch/pkg/infrastructure/converter"
+	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
+	"github.com/TFMV/hatch/pkg/infrastructure/pool"
 )
 
 //───────────────────────────────────

@@ -9,11 +9,11 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/flight/pkg/errors"
-	"github.com/TFMV/flight/pkg/infrastructure"
-	"github.com/TFMV/flight/pkg/infrastructure/pool"
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/repositories"
+	"github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/hatch/pkg/infrastructure"
+	"github.com/TFMV/hatch/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/repositories"
 )
 
 // metadataRepository implements repositories.MetadataRepository for DuckDB.

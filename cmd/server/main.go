@@ -21,9 +21,9 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/TFMV/flight/cmd/server/config"
-	"github.com/TFMV/flight/cmd/server/server"
-	"github.com/TFMV/flight/pkg/infrastructure/metrics"
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/server"
+	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
 )
 
 var (

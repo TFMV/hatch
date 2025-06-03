@@ -74,7 +74,7 @@ These benchmarks were run on a machine with the following specifications:
 ### From Source
 
 ```bash
-go install github.com/TFMV/flight/cmd/server@latest
+go install github.com/TFMV/hatch/cmd/server@latest
 hatch serve --config ./config.yaml
 ```
 
@@ -131,7 +131,7 @@ hatch serve --config ./config.yaml
 ## 🧬 Architecture (bird's‑eye)
 
 ```mermaid
-%% DuckDB Flight SQL Server – Layered Architecture
+%% Hatch Flight SQL Server – Layered Architecture
 flowchart LR
     %% ── LAYER STYLES ──────────────────────────────────────────────
     classDef clientLayer  fill:#e0f7fa,stroke:#0d47a1,stroke-width:1px,color:#0d47a1

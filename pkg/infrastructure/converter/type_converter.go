@@ -10,7 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/flight/pkg/errors"
+	"github.com/TFMV/hatch/pkg/errors"
 )
 
 // TypeConverter handles type conversions between DuckDB and Arrow.

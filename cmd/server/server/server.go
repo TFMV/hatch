@@ -24,15 +24,15 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 
-	"github.com/TFMV/flight/cmd/server/config"
-	"github.com/TFMV/flight/cmd/server/middleware"
-	"github.com/TFMV/flight/pkg/cache"
-	"github.com/TFMV/flight/pkg/handlers"
-	"github.com/TFMV/flight/pkg/infrastructure"
-	"github.com/TFMV/flight/pkg/infrastructure/memory"
-	"github.com/TFMV/flight/pkg/infrastructure/pool"
-	"github.com/TFMV/flight/pkg/repositories/duckdb"
-	"github.com/TFMV/flight/pkg/services"
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/middleware"
+	"github.com/TFMV/hatch/pkg/cache"
+	"github.com/TFMV/hatch/pkg/handlers"
+	"github.com/TFMV/hatch/pkg/infrastructure"
+	"github.com/TFMV/hatch/pkg/infrastructure/memory"
+	"github.com/TFMV/hatch/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/repositories/duckdb"
+	"github.com/TFMV/hatch/pkg/services"
 )
 
 // FlightSQLServer implements the Flight SQL protocol.

@@ -15,8 +15,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/TFMV/flight/cmd/server/config"
-	"github.com/TFMV/flight/cmd/server/server"
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/server"
 )
 
 // TestServer represents a test server instance

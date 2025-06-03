@@ -13,9 +13,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
-	"github.com/TFMV/flight/cmd/server/config"
-	"github.com/TFMV/flight/cmd/server/server"
-	"github.com/TFMV/flight/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/server"
+	"github.com/TFMV/hatch/pkg/infrastructure/pool"
 )
 
 // noopMetrics is a no-op implementation of server.MetricsCollector for benchmarks

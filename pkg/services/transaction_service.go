@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/TFMV/flight/pkg/errors"
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/repositories"
+	"github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/repositories"
 )
 
 // transactionService implements TransactionService interface.
