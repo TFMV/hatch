@@ -41,6 +41,9 @@ type Config struct {
 
 	// Cache configuration
 	Cache CacheConfig `yaml:"cache" json:"cache"`
+
+	// Performance options
+	SafeCopy bool `yaml:"safe_copy" json:"safe_copy"`
 }
 
 // TLSConfig represents TLS configuration.
@@ -292,5 +295,6 @@ func DefaultConfig() *Config {
 				TTL:     5 * time.Minute,
 			},
 		},
+		SafeCopy: false,
 	}
 }

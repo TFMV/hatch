@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	flightsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
-	"github.com/apache/arrow-go/v18/arrow/memory"
+	arrowmemory "github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -28,6 +29,7 @@ import (
 	"github.com/TFMV/flight/pkg/cache"
 	"github.com/TFMV/flight/pkg/handlers"
 	"github.com/TFMV/flight/pkg/infrastructure"
+	"github.com/TFMV/flight/pkg/infrastructure/memory"
 	"github.com/TFMV/flight/pkg/infrastructure/pool"
 	"github.com/TFMV/flight/pkg/repositories/duckdb"
 	"github.com/TFMV/flight/pkg/services"
@@ -42,11 +44,15 @@ type FlightSQLServer struct {
 
 	// Core components
 	pool        pool.ConnectionPool
-	allocator   memory.Allocator
+	allocator   arrowmemory.Allocator
 	logger      zerolog.Logger
 	metrics     MetricsCollector
 	memoryCache cache.Cache
 	cacheKeyGen cache.CacheKeyGenerator
+
+	// Object pools
+	byteBufferPool    *pool.ByteBufferPool
+	recordBuilderPool *pool.RecordBuilderPool
 
 	// Handlers
 	queryHandler             handlers.QueryHandler
@@ -94,8 +100,12 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		sessions: make(map[string]*Session),
 	}
 
-	// Create memory allocator
-	srv.allocator = memory.NewGoAllocator()
+	// Use global tracked allocator
+	srv.allocator = memory.GetAllocator()
+
+	// Initialize object pools
+	srv.byteBufferPool = pool.NewByteBufferPool()
+	srv.recordBuilderPool = pool.NewRecordBuilderPool(srv.allocator)
 
 	// Initialize cache components
 	if cfg.Cache.Enabled {
@@ -277,19 +287,19 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 
 	// Create the flight info
 	flightInfo := &flight.FlightInfo{
-		Schema: info.Schema, // Schema of the result
+		Schema: info.Schema,
 		FlightDescriptor: &flight.FlightDescriptor{
 			Type: flight.DescriptorCMD,
-			Cmd:  descCmdBytes, // Marshaled CommandStatementQuery
+			Cmd:  descCmdBytes,
 		},
 		Endpoint: []*flight.FlightEndpoint{{
 			Ticket: &flight.Ticket{
-				Ticket: epTicketBytes, // Marshaled TicketStatementQuery
+				Ticket: epTicketBytes,
 			},
-			Location: nil, // No specific location for now
+			Location: nil,
 		}},
-		TotalRecords: -1, // Or info.TotalRecords if available and accurate
-		TotalBytes:   -1, // Or info.TotalBytes if available and accurate
+		TotalRecords: -1,
+		TotalBytes:   -1,
 	}
 
 	s.metrics.IncrementCounter("flight_get_info_statement_success")
@@ -346,19 +356,12 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to execute query: %v", err))
 	}
 
-	// Create a buffered channel for flight chunks with a larger buffer to prevent blocking
-	chunkChan := make(chan flight.StreamChunk, 4)
+	// Create a buffered channel for flight chunks
+	chunkChan := make(chan flight.StreamChunk, runtime.NumCPU()*2)
 
 	// Start a goroutine to process records and send chunks
 	go func() {
 		defer close(chunkChan)
-
-		// Create a pool of record builders to reuse
-		builderPool := sync.Pool{
-			New: func() interface{} {
-				return array.NewRecordBuilder(memory.DefaultAllocator, schema)
-			},
-		}
 
 		for chunk := range recordChan {
 			if chunk.Err != nil {
@@ -371,165 +374,114 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 				continue
 			}
 
-			// Get a builder from the pool
-			builder := builderPool.Get().(*array.RecordBuilder)
+			// Implement zero-copy record handling
+			if !s.config.SafeCopy {
+				record.Retain() // Transfer ownership to the goroutine
 
-			// Create a safe copy of the record's data
-			numCols := int(record.NumCols())
+				// Try to send with back-pressure handling
+			sendLoop:
+				for {
+					select {
+					case <-ctx.Done():
+						record.Release()
+						return
+					case chunkChan <- flight.StreamChunk{Data: record}:
+						break sendLoop
+					default:
+						runtime.Gosched() // Yield instead of blocking
+					}
+				}
+				continue
+			}
 
-			// Pre-allocate slices to store column data
-			colData := make([][]interface{}, numCols)
-			colNulls := make([][]bool, numCols)
+			// Safe copy path for unsafe clients
+			builder := s.recordBuilderPool.Get(record.Schema())
+			defer s.recordBuilderPool.Put(builder)
 
 			// Copy data from each column
-			for i := 0; i < numCols; i++ {
+			for i := 0; i < int(record.NumCols()); i++ {
 				col := record.Column(i)
 				if col == nil {
 					continue
 				}
 
-				colLen := int(col.Len())
-				colData[i] = make([]interface{}, colLen)
-				colNulls[i] = make([]bool, colLen)
-
-				for j := 0; j < colLen; j++ {
-					colNulls[i][j] = col.IsNull(j)
-					if !colNulls[i][j] {
-						switch arr := col.(type) {
-						case *array.Int8:
-							colData[i][j] = arr.Value(j)
-						case *array.Int16:
-							colData[i][j] = arr.Value(j)
-						case *array.Int32:
-							colData[i][j] = arr.Value(j)
-						case *array.Int64:
-							colData[i][j] = arr.Value(j)
-						case *array.Uint8:
-							colData[i][j] = arr.Value(j)
-						case *array.Uint16:
-							colData[i][j] = arr.Value(j)
-						case *array.Uint32:
-							colData[i][j] = arr.Value(j)
-						case *array.Uint64:
-							colData[i][j] = arr.Value(j)
-						case *array.Float32:
-							colData[i][j] = arr.Value(j)
-						case *array.Float64:
-							colData[i][j] = arr.Value(j)
-						case *array.String:
-							colData[i][j] = arr.Value(j)
-						case *array.Boolean:
-							colData[i][j] = arr.Value(j)
-						case *array.Binary:
-							colData[i][j] = arr.Value(j)
-						case *array.Decimal128:
-							colData[i][j] = arr.Value(j)
-						case *array.Timestamp:
-							colData[i][j] = arr.Value(j)
-						case *array.Time32:
-							colData[i][j] = arr.Value(j)
-						case *array.Time64:
-							colData[i][j] = arr.Value(j)
-						case *array.Date32:
-							colData[i][j] = arr.Value(j)
-						case *array.Date64:
-							colData[i][j] = arr.Value(j)
-						default:
-							s.logger.Error().
-								Str("type", fmt.Sprintf("%T", col)).
-								Int("column", i).
-								Msg("Unsupported column type")
-							continue
-						}
-					}
-				}
-			}
-
-			// Now build the new record without holding the lock
-			for i := 0; i < numCols; i++ {
 				fieldBuilder := builder.Field(i)
 				if fieldBuilder == nil {
 					continue
 				}
 
-				for j := 0; j < len(colData[i]); j++ {
-					if colNulls[i][j] {
+				// Copy column data
+				for j := 0; j < int(col.Len()); j++ {
+					if col.IsNull(j) {
 						fieldBuilder.AppendNull()
 						continue
 					}
 
-					switch b := fieldBuilder.(type) {
-					case *array.Int8Builder:
-						b.Append(colData[i][j].(int8))
-					case *array.Int16Builder:
-						b.Append(colData[i][j].(int16))
-					case *array.Int32Builder:
-						b.Append(colData[i][j].(int32))
-					case *array.Int64Builder:
-						b.Append(colData[i][j].(int64))
-					case *array.Uint8Builder:
-						b.Append(colData[i][j].(uint8))
-					case *array.Uint16Builder:
-						b.Append(colData[i][j].(uint16))
-					case *array.Uint32Builder:
-						b.Append(colData[i][j].(uint32))
-					case *array.Uint64Builder:
-						b.Append(colData[i][j].(uint64))
-					case *array.Float32Builder:
-						b.Append(colData[i][j].(float32))
-					case *array.Float64Builder:
-						b.Append(colData[i][j].(float64))
-					case *array.StringBuilder:
-						b.Append(colData[i][j].(string))
-					case *array.BooleanBuilder:
-						b.Append(colData[i][j].(bool))
-					case *array.BinaryBuilder:
-						b.Append(colData[i][j].([]byte))
-					case *array.Decimal128Builder:
-						b.Append(colData[i][j].(*array.Decimal128).Value(j))
-					case *array.TimestampBuilder:
-						b.Append(colData[i][j].(arrow.Timestamp))
-					case *array.Time32Builder:
-						b.Append(colData[i][j].(arrow.Time32))
-					case *array.Time64Builder:
-						b.Append(colData[i][j].(arrow.Time64))
-					case *array.Date32Builder:
-						b.Append(colData[i][j].(arrow.Date32))
-					case *array.Date64Builder:
-						b.Append(colData[i][j].(arrow.Date64))
+					switch arr := col.(type) {
+					case *array.Int8:
+						fieldBuilder.(*array.Int8Builder).Append(arr.Value(j))
+					case *array.Int16:
+						fieldBuilder.(*array.Int16Builder).Append(arr.Value(j))
+					case *array.Int32:
+						fieldBuilder.(*array.Int32Builder).Append(arr.Value(j))
+					case *array.Int64:
+						fieldBuilder.(*array.Int64Builder).Append(arr.Value(j))
+					case *array.Uint8:
+						fieldBuilder.(*array.Uint8Builder).Append(arr.Value(j))
+					case *array.Uint16:
+						fieldBuilder.(*array.Uint16Builder).Append(arr.Value(j))
+					case *array.Uint32:
+						fieldBuilder.(*array.Uint32Builder).Append(arr.Value(j))
+					case *array.Uint64:
+						fieldBuilder.(*array.Uint64Builder).Append(arr.Value(j))
+					case *array.Float32:
+						fieldBuilder.(*array.Float32Builder).Append(arr.Value(j))
+					case *array.Float64:
+						fieldBuilder.(*array.Float64Builder).Append(arr.Value(j))
+					case *array.String:
+						fieldBuilder.(*array.StringBuilder).Append(arr.Value(j))
+					case *array.Boolean:
+						fieldBuilder.(*array.BooleanBuilder).Append(arr.Value(j))
+					case *array.Binary:
+						fieldBuilder.(*array.BinaryBuilder).Append(arr.Value(j))
+					case *array.Decimal128:
+						fieldBuilder.(*array.Decimal128Builder).Append(arr.Value(j))
+					case *array.Timestamp:
+						fieldBuilder.(*array.TimestampBuilder).Append(arr.Value(j))
+					case *array.Time32:
+						fieldBuilder.(*array.Time32Builder).Append(arr.Value(j))
+					case *array.Time64:
+						fieldBuilder.(*array.Time64Builder).Append(arr.Value(j))
+					case *array.Date32:
+						fieldBuilder.(*array.Date32Builder).Append(arr.Value(j))
+					case *array.Date64:
+						fieldBuilder.(*array.Date64Builder).Append(arr.Value(j))
+					default:
+						s.logger.Error().
+							Str("type", fmt.Sprintf("%T", col)).
+							Int("column", i).
+							Msg("Unsupported column type")
+						continue
 					}
 				}
 			}
 
 			// Create a new record from the builder
 			recordCopy := builder.NewRecord()
+			defer recordCopy.Release()
 
-			// Put the builder back in the pool
-			builder.Release()
-			builderPool.Put(builder)
-
-			s.logger.Debug().
-				Int("record_num_rows", int(recordCopy.NumRows())).
-				Int("record_num_cols", int(recordCopy.NumCols())).
-				Str("record_schema", recordCopy.Schema().String()).
-				Msg("DoGetStatement: Record state before sending")
-
-			// Send the record copy as a chunk
-			select {
-			case <-ctx.Done():
-				s.logger.Debug().Msg("Context cancelled while sending record chunk")
-				recordCopy.Release()
-				return
-			case chunkChan <- flight.StreamChunk{
-				Data: recordCopy,
-			}:
-				s.logger.Debug().
-					Int("rows", int(recordCopy.NumRows())).
-					Msg("Sent record chunk to stream")
+			// Send the record copy as a chunk with back-pressure handling
+		sendCopyLoop:
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case chunkChan <- flight.StreamChunk{Data: recordCopy}:
+					break sendCopyLoop
+				default:
+					runtime.Gosched() // Yield instead of blocking
+				}
 			}
-
-			// Release the original record
-			record.Release()
 		}
 	}()
 
