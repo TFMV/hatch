@@ -8,18 +8,18 @@
 
 > Hatch is still in early development, and you're welcome to experiment, explore, or contribute in any way you'd like. You don't need to know Go. Bug reports, documentation improvements, and ideas are all appreciated.
 
-## The Big Idea
+## 🧠 The Big Idea
 
 A great engine shouldn't be gated by heavyweight infra.
-Hatch keeps DuckDB's magic small, open, and composable—so your data can fly wherever you need it.
+Hatch keeps DuckDB's magic small, open, and composable so your data can fly wherever you need it.
 
 ---
 
-## Why Hatch Exists
+## 🙋 Why Hatch Exists
 
 ### 1. Arrow‑Native Networking Is Inevitable  
 
-Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. DuckDB already "speaks Arrow" internally—Hatch lets it **broadcast**.
+Flight SQL moves columnar data faster than REST or JDBC, with schemas baked in. DuckDB already "speaks Arrow" internally. Hatch lets it **broadcast**.
 
 ### 2. Self‑Hosted ≠ Heavyweight  
 
@@ -39,9 +39,9 @@ Hatch is scaffolding, not a silo.
 
 ---
 
-## Benchmarks
+## 🛩️ Benchmarks
 
-Hatch is designed for high performance and low latency. Below are benchmark results from early testing. While DoGetStatement still has room for optimization, most operations perform reasonably well across a variety of sizes.
+Hatch is designed for high performance and low latency. Below are benchmark results from early testing. While DoGetStatement still has room for optimization, most operations perform well across a variety of sizes.
 
 | Operation                 | Size      | Latency      | Memory   | Allocs  |
 | ------------------------- | --------- | ------------ | -------- | ------- |
