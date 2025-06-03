@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"fmt"
 	"strings"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -20,14 +23,29 @@ import (
 type AuthMiddleware struct {
 	config config.AuthConfig
 	logger zerolog.Logger
+	HSKey  []byte
+	RSKey  interface{}
+	Iss    string
+	Aud    string
 }
 
 // NewAuthMiddleware creates a new authentication middleware.
 func NewAuthMiddleware(cfg config.AuthConfig, logger zerolog.Logger) *AuthMiddleware {
-	return &AuthMiddleware{
+	m := &AuthMiddleware{
 		config: cfg,
 		logger: logger,
 	}
+
+	// Initialize JWT-related fields if JWT auth is enabled
+	if cfg.Type == "jwt" {
+		if cfg.JWTAuth.Secret != "" {
+			m.HSKey = []byte(cfg.JWTAuth.Secret)
+		}
+		m.Iss = cfg.JWTAuth.Issuer
+		m.Aud = cfg.JWTAuth.Audience
+	}
+
+	return m
 }
 
 // UnaryInterceptor returns a unary server interceptor for authentication.
@@ -173,8 +191,103 @@ func (m *AuthMiddleware) authenticateBearer(ctx context.Context) (context.Contex
 
 // authenticateJWT performs JWT authentication.
 func (m *AuthMiddleware) authenticateJWT(ctx context.Context) (context.Context, error) {
-	// TODO: Implement JWT authentication
-	return nil, status.Error(codes.Unimplemented, "JWT authentication not yet implemented")
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ctx, status.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	authHeaders := md.Get("authorization")
+	if len(authHeaders) == 0 {
+		return ctx, status.Error(codes.Unauthenticated, "no authorization header")
+	}
+
+	// We only inspect the first header; multiple are unusual for gRPC.
+	raw := strings.TrimSpace(authHeaders[0])
+	const bearer = "bearer "
+	if len(raw) < len(bearer) || !strings.EqualFold(raw[:len(bearer)], bearer) {
+		return ctx, status.Error(codes.Unauthenticated, "authorization header is not Bearer")
+	}
+	tokenString := strings.TrimSpace(raw[len(bearer):])
+	if tokenString == "" {
+		return ctx, status.Error(codes.Unauthenticated, "empty bearer token")
+	}
+
+	// Custom key‑func that selects the proper key based on signing method.
+	keyFunc := func(t *jwt.Token) (any, error) {
+		switch t.Method.(type) {
+		case *jwt.SigningMethodHMAC:
+			if len(m.HSKey) == 0 {
+				return nil, fmt.Errorf("unexpected HMAC token")
+			}
+			return m.HSKey, nil
+		case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+			if m.RSKey == nil {
+				return nil, fmt.Errorf("unexpected asymmetric‑key token")
+			}
+			return m.RSKey, nil
+		default:
+			return nil, fmt.Errorf("unsupported signing algorithm %s", t.Method.Alg())
+		}
+	}
+
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims, keyFunc,
+		jwt.WithValidMethods([]string{
+			jwt.SigningMethodHS256.Alg(),
+			jwt.SigningMethodHS384.Alg(),
+			jwt.SigningMethodHS512.Alg(),
+			jwt.SigningMethodRS256.Alg(),
+			jwt.SigningMethodRS384.Alg(),
+			jwt.SigningMethodRS512.Alg(),
+			jwt.SigningMethodES256.Alg(),
+			jwt.SigningMethodES384.Alg(),
+			jwt.SigningMethodES512.Alg(),
+		}))
+	if err != nil || !token.Valid {
+		return ctx, status.Error(codes.Unauthenticated, "invalid JWT: "+err.Error())
+	}
+
+	// ---- additional claim checks ------------------------------------------------
+	if iss := m.Iss; iss != "" {
+		if iclaim, _ := claims["iss"].(string); iclaim != iss {
+			return ctx, status.Error(codes.Unauthenticated, "issuer mismatch")
+		}
+	}
+	if aud := m.Aud; aud != "" {
+		switch v := claims["aud"].(type) {
+		case string:
+			if v != aud {
+				return ctx, status.Error(codes.Unauthenticated, "audience mismatch")
+			}
+		case []any:
+			found := false
+			for _, a := range v {
+				if s, ok := a.(string); ok && s == aud {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return ctx, status.Error(codes.Unauthenticated, "audience mismatch")
+			}
+		}
+	}
+	// Expiry is validated automatically by jwt.ParseWithClaims, but we ensure
+	// the claim exists so Missing exp causes rejection.
+	if _, ok := claims["exp"]; !ok {
+		return ctx, status.Error(codes.Unauthenticated, "missing exp claim")
+	}
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		return ctx, status.Error(codes.Unauthenticated, "invalid exp claim type")
+	}
+	if time.Unix(int64(exp), 0).Before(time.Now()) {
+		return ctx, status.Error(codes.Unauthenticated, "token expired")
+	}
+
+	// Subject becomes the logical user identity.
+	sub, _ := claims["sub"].(string)
+	return context.WithValue(ctx, ctxUserKey{}, sub), nil
 }
 
 // Context keys for authentication
@@ -205,4 +318,17 @@ type authServerStream struct {
 
 func (s *authServerStream) Context() context.Context {
 	return s.ctx
+}
+
+// ctxUserKey is the context key under which the authenticated user ( sub  claim)
+// is stored after successful JWT verification.
+type ctxUserKey struct{}
+
+// AuthenticatedUser returns the user‐id (JWT "sub") previously placed in the
+// context by the authentication middleware, or "" if absent.
+func AuthenticatedUser(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxUserKey{}).(string); ok {
+		return v
+	}
+	return ""
 }

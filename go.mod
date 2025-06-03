@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/apache/arrow-go/v18 v18.3.0
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/marcboeker/go-duckdb/v2 v2.3.0
 	github.com/prometheus/client_golang v1.22.0
