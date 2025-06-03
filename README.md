@@ -44,7 +44,7 @@ Hatch is scaffolding, not a silo.
 ### From Source
 
 ```bash
-go install github.com/TFMV/hatch/cmd/server@latest
+go install github.com/TFMV/flight/cmd/server@latest
 hatch serve --config ./config.yaml
 ```
 
