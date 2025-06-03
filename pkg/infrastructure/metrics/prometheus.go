@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -128,6 +129,7 @@ func parseLabelPairs(labels []string) ([]string, []string) {
 type MetricsServer struct {
 	address string
 	server  *http.Server
+	mu      sync.RWMutex
 }
 
 // NewMetricsServer creates a new metrics server.
@@ -142,18 +144,24 @@ func (s *MetricsServer) Start() error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 
+	s.mu.Lock()
 	s.server = &http.Server{
 		Addr:    s.address,
 		Handler: mux,
 	}
+	s.mu.Unlock()
 
 	return s.server.ListenAndServe()
 }
 
 // Stop stops the metrics server.
 func (s *MetricsServer) Stop() error {
-	if s.server != nil {
-		return s.server.Close()
+	s.mu.RLock()
+	server := s.server
+	s.mu.RUnlock()
+
+	if server != nil {
+		return server.Close()
 	}
 	return nil
 }
