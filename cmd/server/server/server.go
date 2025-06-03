@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,6 +68,10 @@ type FlightSQLServer struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	closing  bool
+
+	// OAuth2 components
+	authMiddleware *middleware.AuthMiddleware
+	httpServer     *http.Server
 }
 
 // Session represents a client session.
@@ -166,6 +171,33 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		return nil, fmt.Errorf("failed to register SQL info: %w", err)
 	}
 
+	// Initialize OAuth2 endpoints if enabled
+	if cfg.Auth.Enabled && cfg.Auth.Type == "oauth2" {
+		srv.authMiddleware = middleware.NewAuthMiddleware(cfg.Auth, logger)
+
+		// Create HTTP server for OAuth2 endpoints
+		mux := http.NewServeMux()
+		mux.HandleFunc("/oauth2/authorize", srv.authMiddleware.HandleOAuth2Authorize)
+		mux.HandleFunc("/oauth2/token", srv.authMiddleware.HandleOAuth2Token)
+
+		srv.httpServer = &http.Server{
+			Addr:    cfg.Auth.OAuth2Auth.RedirectURL,
+			Handler: mux,
+		}
+
+		// Start HTTP server in a goroutine
+		go func() {
+			if err := srv.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error().Err(err).Msg("OAuth2 HTTP server error")
+			}
+		}()
+
+		logger.Info().
+			Str("authorize_endpoint", "/oauth2/authorize").
+			Str("token_endpoint", "/oauth2/token").
+			Msg("OAuth2 endpoints initialized")
+	}
+
 	return srv, nil
 }
 
@@ -212,6 +244,13 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 	s.mu.Unlock()
 
 	s.logger.Info().Msg("Closing Flight SQL server")
+
+	// Stop OAuth2 HTTP server if running
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			s.logger.Error().Err(err).Msg("Error shutting down OAuth2 HTTP server")
+		}
+	}
 
 	// Stop transaction service if it has a Stop method
 	if stopper, ok := s.transactionService.(interface{ Stop() }); ok {

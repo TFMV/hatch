@@ -3,10 +3,15 @@ package middleware
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -19,14 +24,42 @@ import (
 	"github.com/TFMV/hatch/cmd/server/config"
 )
 
+// OAuth2Token represents an OAuth2 token with additional metadata
+type OAuth2Token struct {
+	AccessToken  string    `json:"access_token"`
+	TokenType    string    `json:"token_type"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Scope        string    `json:"scope,omitempty"`
+	UserID       string    `json:"user_id,omitempty"`
+}
+
+// TokenStore manages OAuth2 tokens
+type TokenStore struct {
+	mu                sync.RWMutex
+	accessTokens      map[string]*OAuth2Token
+	refreshTokens     map[string]*OAuth2Token
+	authorizationCode map[string]authorizationCode
+}
+
+type authorizationCode struct {
+	code        string
+	clientID    string
+	redirectURI string
+	scope       string
+	expiresAt   time.Time
+	userID      string
+}
+
 // AuthMiddleware provides authentication middleware.
 type AuthMiddleware struct {
-	config config.AuthConfig
-	logger zerolog.Logger
-	HSKey  []byte
-	RSKey  interface{}
-	Iss    string
-	Aud    string
+	config     config.AuthConfig
+	logger     zerolog.Logger
+	HSKey      []byte
+	RSKey      interface{}
+	Iss        string
+	Aud        string
+	tokenStore *TokenStore
 }
 
 // NewAuthMiddleware creates a new authentication middleware.
@@ -34,6 +67,11 @@ func NewAuthMiddleware(cfg config.AuthConfig, logger zerolog.Logger) *AuthMiddle
 	m := &AuthMiddleware{
 		config: cfg,
 		logger: logger,
+		tokenStore: &TokenStore{
+			accessTokens:      make(map[string]*OAuth2Token),
+			refreshTokens:     make(map[string]*OAuth2Token),
+			authorizationCode: make(map[string]authorizationCode),
+		},
 	}
 
 	// Initialize JWT-related fields if JWT auth is enabled
@@ -103,6 +141,8 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, err
 		return m.authenticateBearer(ctx)
 	case "jwt":
 		return m.authenticateJWT(ctx)
+	case "oauth2":
+		return m.authenticateOAuth2(ctx)
 	default:
 		return nil, status.Errorf(codes.Internal, "unsupported auth type: %s", m.config.Type)
 	}
@@ -288,6 +328,238 @@ func (m *AuthMiddleware) authenticateJWT(ctx context.Context) (context.Context, 
 	// Subject becomes the logical user identity.
 	sub, _ := claims["sub"].(string)
 	return context.WithValue(ctx, ctxUserKey{}, sub), nil
+}
+
+// authenticateOAuth2 performs OAuth2 authentication
+func (m *AuthMiddleware) authenticateOAuth2(ctx context.Context) (context.Context, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "missing metadata")
+	}
+
+	authHeaders := md.Get("authorization")
+	if len(authHeaders) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "missing authorization header")
+	}
+
+	authHeader := authHeaders[0]
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		return nil, status.Error(codes.Unauthenticated, "invalid authorization header")
+	}
+
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	// Validate access token
+	m.tokenStore.mu.RLock()
+	tokenInfo, exists := m.tokenStore.accessTokens[token]
+	m.tokenStore.mu.RUnlock()
+
+	if !exists {
+		return nil, status.Error(codes.Unauthenticated, "invalid token")
+	}
+
+	if time.Now().After(tokenInfo.ExpiresAt) {
+		return nil, status.Error(codes.Unauthenticated, "token expired")
+	}
+
+	// Add user info to context
+	ctx = context.WithValue(ctx, contextKeyUser, tokenInfo.UserID)
+	return ctx, nil
+}
+
+// HandleOAuth2Authorize handles the OAuth2 authorization endpoint
+func (m *AuthMiddleware) HandleOAuth2Authorize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	clientID := r.URL.Query().Get("client_id")
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	scope := r.URL.Query().Get("scope")
+	responseType := r.URL.Query().Get("response_type")
+
+	if clientID != m.config.OAuth2Auth.ClientID {
+		http.Error(w, "Invalid client ID", http.StatusBadRequest)
+		return
+	}
+
+	if responseType != "code" {
+		http.Error(w, "Unsupported response type", http.StatusBadRequest)
+		return
+	}
+
+	// Generate authorization code
+	code := generateRandomString(32)
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	authCode := authorizationCode{
+		code:        code,
+		clientID:    clientID,
+		redirectURI: redirectURI,
+		scope:       scope,
+		expiresAt:   expiresAt,
+		userID:      "user123", // In a real implementation, this would come from user authentication
+	}
+
+	m.tokenStore.mu.Lock()
+	m.tokenStore.authorizationCode[code] = authCode
+	m.tokenStore.mu.Unlock()
+
+	// Redirect back to client with authorization code
+	redirectURL := fmt.Sprintf("%s?code=%s", redirectURI, code)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// HandleOAuth2Token handles the OAuth2 token endpoint
+func (m *AuthMiddleware) HandleOAuth2Token(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	grantType := r.FormValue("grant_type")
+
+	switch grantType {
+	case "authorization_code":
+		m.handleAuthorizationCodeGrant(w, r)
+	case "refresh_token":
+		m.handleRefreshTokenGrant(w, r)
+	case "client_credentials":
+		m.handleClientCredentialsGrant(w, r)
+	default:
+		http.Error(w, "Unsupported grant type", http.StatusBadRequest)
+	}
+}
+
+func (m *AuthMiddleware) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+	code := r.FormValue("code")
+	clientID := r.FormValue("client_id")
+	clientSecret := r.FormValue("client_secret")
+	redirectURI := r.FormValue("redirect_uri")
+
+	// Validate client credentials
+	if clientID != m.config.OAuth2Auth.ClientID || clientSecret != m.config.OAuth2Auth.ClientSecret {
+		http.Error(w, "Invalid client credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Validate authorization code
+	m.tokenStore.mu.Lock()
+	authCode, exists := m.tokenStore.authorizationCode[code]
+	delete(m.tokenStore.authorizationCode, code) // Remove used code
+	m.tokenStore.mu.Unlock()
+
+	if !exists || time.Now().After(authCode.expiresAt) || authCode.redirectURI != redirectURI {
+		http.Error(w, "Invalid authorization code", http.StatusBadRequest)
+		return
+	}
+
+	// Generate tokens
+	token := m.generateOAuth2Token(authCode.userID, authCode.scope)
+	m.tokenStore.mu.Lock()
+	m.tokenStore.accessTokens[token.AccessToken] = token
+	if token.RefreshToken != "" {
+		m.tokenStore.refreshTokens[token.RefreshToken] = token
+	}
+	m.tokenStore.mu.Unlock()
+
+	// Return token response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(token); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to encode token response")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (m *AuthMiddleware) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	refreshToken := r.FormValue("refresh_token")
+	clientID := r.FormValue("client_id")
+	clientSecret := r.FormValue("client_secret")
+
+	// Validate client credentials
+	if clientID != m.config.OAuth2Auth.ClientID || clientSecret != m.config.OAuth2Auth.ClientSecret {
+		http.Error(w, "Invalid client credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Validate refresh token
+	m.tokenStore.mu.Lock()
+	oldToken, exists := m.tokenStore.refreshTokens[refreshToken]
+	delete(m.tokenStore.refreshTokens, refreshToken)        // Remove used refresh token
+	delete(m.tokenStore.accessTokens, oldToken.AccessToken) // Remove old access token
+	m.tokenStore.mu.Unlock()
+
+	if !exists {
+		http.Error(w, "Invalid refresh token", http.StatusBadRequest)
+		return
+	}
+
+	// Generate new tokens
+	token := m.generateOAuth2Token(oldToken.UserID, oldToken.Scope)
+	m.tokenStore.mu.Lock()
+	m.tokenStore.accessTokens[token.AccessToken] = token
+	if token.RefreshToken != "" {
+		m.tokenStore.refreshTokens[token.RefreshToken] = token
+	}
+	m.tokenStore.mu.Unlock()
+
+	// Return token response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(token); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to encode token response")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (m *AuthMiddleware) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Request) {
+	clientID := r.FormValue("client_id")
+	clientSecret := r.FormValue("client_secret")
+	scope := r.FormValue("scope")
+
+	// Validate client credentials
+	if clientID != m.config.OAuth2Auth.ClientID || clientSecret != m.config.OAuth2Auth.ClientSecret {
+		http.Error(w, "Invalid client credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Generate token without refresh token
+	token := m.generateOAuth2Token(clientID, scope)
+	token.RefreshToken = "" // Client credentials grant doesn't use refresh tokens
+
+	m.tokenStore.mu.Lock()
+	m.tokenStore.accessTokens[token.AccessToken] = token
+	m.tokenStore.mu.Unlock()
+
+	// Return token response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(token); err != nil {
+		m.logger.Error().Err(err).Msg("Failed to encode token response")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (m *AuthMiddleware) generateOAuth2Token(userID, scope string) *OAuth2Token {
+	token := &OAuth2Token{
+		AccessToken:  generateRandomString(32),
+		TokenType:    "Bearer",
+		RefreshToken: generateRandomString(32),
+		ExpiresAt:    time.Now().Add(m.config.OAuth2Auth.AccessTokenTTL),
+		Scope:        scope,
+		UserID:       userID,
+	}
+	return token
+}
+
+func generateRandomString(length int) string {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }
 
 // Context keys for authentication
