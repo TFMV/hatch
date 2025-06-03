@@ -37,33 +37,9 @@ Hatch is scaffolding, not a silo.
 
 ---
 
-## 🛩️ Benchmarks
+## 🛩️ Performance
 
-Hatch is designed for high performance and low latency. Below are benchmark results from early testing. While DoGetStatement still has room for optimization, most operations perform well across a variety of sizes.
-
-| Operation                 | Size      | Latency      | Memory   | Allocs  |
-| ------------------------- | --------- | ------------ | -------- | ------- |
-| GetFlightInfoStatement    | Simple    | 151 ns/op    | 15.7 KB  | 192     |
-| DoGetStatement            | 1K rows   | 179 μs/op    | 36.0 KB  | 873     |
-| DoGetStatement            | 10K rows  | 855 μs/op    | 290.5 KB | 10,203  |
-| DoGetStatement            | 100K rows | 7.67 ms/op   | 2.79 MB  | 103,462 |
-| RecordBuilderPool Get/Put | –         | 8.43 ns/op   | 0 B      | 0       |
-| RecordBuilderPool Build   | –         | 1.48 μs/op   | 2.62 KB  | 31      |
-| ByteBufferPool (64B)      | –         | 33.66 ns/op  | 24 B     | 1       |
-| ByteBufferPool (1KB)      | –         | 33.05 ns/op  | 24 B     | 1       |
-| ByteBufferPool (4KB)      | –         | 36.77 ns/op  | 24 B     | 1       |
-| ByteBufferPool (16KB)     | –         | 36.01 ns/op  | 24 B     | 1       |
-| ParallelQueryExecution    | 1K rows   | 65.08 μs/op  | 36.0 KB  | 873     |
-| MemoryUsage               | 1K rows   | 56.10 μs/op  | 88.8 KB  | 82      |
-| MemoryUsage               | 10K rows  | 566.33 μs/op | 1.34 MB  | 119     |
-| MemoryUsage               | 100K rows | 3.98 ms/op   | 9.85 MB  | 147     |
-
-These benchmarks were run on a machine with the following specifications:
-
-- CPU: Apple M2 Pro
-- Memory: 32GB
-- Go version: 1.24.3
-- DuckDB version: 1.3.0
+For detailed performance benchmarks, see [benchmarks.md](flight/benchmarks.md).
 
 ---
 
