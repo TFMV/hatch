@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -271,16 +273,72 @@ func (p *connectionPool) getHealthStatus() string {
 	return "unknown"
 }
 
-// maskDSN masks sensitive information in DSN.
+// maskDSN hides sensitive information (passwords, tokens, secrets) but keeps
+// enough of the string to be recognisable in logs.
+//
+// Behaviour:
+//
+//   - ":memory:" or empty → returned verbatim (special DuckDB value)
+//   - URL‑like DSNs       → redact user‑password and sensitive query params
+//   - Plain paths/files   → keep first/last 3 runes, mask the middle
+//
+// The function is intentionally conservative: if it cannot confidently parse
+// the string as a URL it falls back to a simple middle‑mask so that nothing
+// secret leaks.
 func maskDSN(dsn string) string {
-	if dsn == ":memory:" || dsn == "" {
+	if dsn == "" || dsn == ":memory:" {
 		return dsn
 	}
-	// Simple masking - in production, use more sophisticated parsing
-	if len(dsn) > 10 {
-		return dsn[:5] + "***" + dsn[len(dsn)-5:]
+
+	u, err := url.Parse(dsn)
+	if err == nil && looksLikeURL(u) {
+		// ── mask user‑info ────────────────────────────────────────────────
+		if ui := u.User; ui != nil {
+			user := ui.Username()
+			if _, hasPass := ui.Password(); hasPass {
+				u.User = url.UserPassword(user, "*****")
+			} else {
+				u.User = url.User(user) // just keep the username
+			}
+		}
+
+		// ── mask sensitive query params ──────────────────────────────────
+		q := u.Query()
+		for k := range q {
+			if isSensitiveKey(k) {
+				q.Set(k, "*****")
+			}
+		}
+		u.RawQuery = q.Encode()
+		return u.String()
 	}
-	return "***"
+
+	// ── fallback: simple masking for non‑URL DSNs ────────────────────────
+	runes := []rune(dsn)
+	if len(runes) <= 10 {
+		return "***"
+	}
+	return string(runes[:3]) + "***" + string(runes[len(runes)-3:])
+}
+
+// looksLikeURL returns true when the parsed value has enough URL structure to
+// treat it as a DSN we can meaningfully redact.
+func looksLikeURL(u *url.URL) bool {
+	return u.Scheme != "" || u.Host != "" || u.User != nil || u.RawQuery != ""
+}
+
+// isSensitiveKey reports whether a query key should have its value masked.
+func isSensitiveKey(key string) bool {
+	key = strings.ToLower(key)
+	switch {
+	case strings.Contains(key, "pass"),
+		strings.Contains(key, "token"),
+		strings.Contains(key, "secret"),
+		strings.HasSuffix(key, "key"):
+		return true
+	default:
+		return false
+	}
 }
 
 // ConnectionWrapper wraps a database connection with additional functionality.
