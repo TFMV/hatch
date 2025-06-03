@@ -11,9 +11,11 @@ import (
 
 	"github.com/TFMV/hatch/pkg/errors"
 	"github.com/TFMV/hatch/pkg/infrastructure"
+	"github.com/TFMV/hatch/pkg/infrastructure/converter"
 	"github.com/TFMV/hatch/pkg/infrastructure/pool"
 	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/repositories"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // metadataRepository implements repositories.MetadataRepository for DuckDB.
@@ -159,9 +161,205 @@ func (*metadataRepository) GetCrossReference(context.Context, models.CrossTableR
 	return nil, nil
 }
 
-func (r *metadataRepository) GetTypeInfo(context.Context, *int32) ([]models.XdbcTypeInfo, error) {
-	// TODO: XDBC provider integration.
-	return nil, nil
+func (r *metadataRepository) GetTypeInfo(ctx context.Context, dataType *int32) ([]models.XdbcTypeInfo, error) {
+	tc := converter.New(r.log)
+
+	// Define common DuckDB types
+	duckdbTypes := []string{
+		"tinyint", "smallint", "integer", "bigint",
+		"real", "float", "double", "decimal", "numeric",
+		"boolean", "varchar", "text", "blob",
+		"date", "time", "timestamp",
+	}
+
+	// If dataType is nil, return all types
+	if dataType == nil {
+		types := make([]models.XdbcTypeInfo, 0)
+		for _, duckdbType := range duckdbTypes {
+			sqlType := tc.GetSQLType(duckdbType)
+			arrowType, err := tc.DuckDBToArrowType(duckdbType)
+			if err != nil {
+				continue
+			}
+
+			types = append(types, models.XdbcTypeInfo{
+				TypeName:          duckdbType,
+				DataType:          sqlType,
+				ColumnSize:        sql.NullInt32{Int32: getColumnSize(arrowType), Valid: true},
+				LiteralPrefix:     sql.NullString{String: getLiteralPrefix(arrowType), Valid: true},
+				LiteralSuffix:     sql.NullString{String: getLiteralSuffix(arrowType), Valid: true},
+				CreateParams:      sql.NullString{String: getCreateParams(arrowType), Valid: true},
+				Nullable:          1, // SQL_NULLABLE
+				CaseSensitive:     getCaseSensitive(arrowType),
+				Searchable:        3, // SQL_SEARCHABLE
+				UnsignedAttribute: sql.NullBool{Bool: false, Valid: true},
+				FixedPrecScale:    getFixedPrecScale(arrowType),
+				AutoIncrement:     sql.NullBool{Bool: false, Valid: true},
+				LocalTypeName:     sql.NullString{String: duckdbType, Valid: true},
+				MinimumScale:      sql.NullInt32{Int32: getMinimumScale(arrowType), Valid: true},
+				MaximumScale:      sql.NullInt32{Int32: getMaximumScale(arrowType), Valid: true},
+				SQLDataType:       sqlType,
+				DatetimeSubcode:   sql.NullInt32{Int32: getSQLDateTimeSub(arrowType), Valid: true},
+				NumPrecRadix:      sql.NullInt32{Int32: getNumPrecRadix(arrowType), Valid: true},
+				IntervalPrecision: sql.NullInt32{Int32: 0, Valid: true},
+			})
+		}
+		return types, nil
+	}
+
+	// Find types matching the specified dataType
+	types := make([]models.XdbcTypeInfo, 0)
+	for _, duckdbType := range duckdbTypes {
+		sqlType := tc.GetSQLType(duckdbType)
+		if sqlType == *dataType {
+			arrowType, err := tc.DuckDBToArrowType(duckdbType)
+			if err != nil {
+				continue
+			}
+
+			types = append(types, models.XdbcTypeInfo{
+				TypeName:          duckdbType,
+				DataType:          sqlType,
+				ColumnSize:        sql.NullInt32{Int32: getColumnSize(arrowType), Valid: true},
+				LiteralPrefix:     sql.NullString{String: getLiteralPrefix(arrowType), Valid: true},
+				LiteralSuffix:     sql.NullString{String: getLiteralSuffix(arrowType), Valid: true},
+				CreateParams:      sql.NullString{String: getCreateParams(arrowType), Valid: true},
+				Nullable:          1, // SQL_NULLABLE
+				CaseSensitive:     getCaseSensitive(arrowType),
+				Searchable:        3, // SQL_SEARCHABLE
+				UnsignedAttribute: sql.NullBool{Bool: false, Valid: true},
+				FixedPrecScale:    getFixedPrecScale(arrowType),
+				AutoIncrement:     sql.NullBool{Bool: false, Valid: true},
+				LocalTypeName:     sql.NullString{String: duckdbType, Valid: true},
+				MinimumScale:      sql.NullInt32{Int32: getMinimumScale(arrowType), Valid: true},
+				MaximumScale:      sql.NullInt32{Int32: getMaximumScale(arrowType), Valid: true},
+				SQLDataType:       sqlType,
+				DatetimeSubcode:   sql.NullInt32{Int32: getSQLDateTimeSub(arrowType), Valid: true},
+				NumPrecRadix:      sql.NullInt32{Int32: getNumPrecRadix(arrowType), Valid: true},
+				IntervalPrecision: sql.NullInt32{Int32: 0, Valid: true},
+			})
+		}
+	}
+	return types, nil
+}
+
+// Helper functions for XDBC type info
+func getColumnSize(arrowType arrow.DataType) int32 {
+	switch arrowType.ID() {
+	case arrow.INT8, arrow.UINT8:
+		return 3
+	case arrow.INT16, arrow.UINT16:
+		return 5
+	case arrow.INT32, arrow.UINT32:
+		return 10
+	case arrow.INT64, arrow.UINT64:
+		return 19
+	case arrow.FLOAT32:
+		return 7
+	case arrow.FLOAT64:
+		return 15
+	case arrow.STRING:
+		return 0 // Variable length
+	case arrow.DECIMAL:
+		decimalType := arrowType.(arrow.DecimalType)
+		return decimalType.GetPrecision()
+	default:
+		return 0
+	}
+}
+
+func getLiteralPrefix(arrowType arrow.DataType) string {
+	switch arrowType.ID() {
+	case arrow.STRING:
+		return "'"
+	case arrow.DATE32, arrow.DATE64:
+		return "'"
+	case arrow.TIMESTAMP:
+		return "'"
+	default:
+		return ""
+	}
+}
+
+func getLiteralSuffix(arrowType arrow.DataType) string {
+	switch arrowType.ID() {
+	case arrow.STRING:
+		return "'"
+	case arrow.DATE32, arrow.DATE64:
+		return "'"
+	case arrow.TIMESTAMP:
+		return "'"
+	default:
+		return ""
+	}
+}
+
+func getCreateParams(arrowType arrow.DataType) string {
+	switch arrowType.ID() {
+	case arrow.DECIMAL:
+		return "precision,scale"
+	case arrow.STRING:
+		return "length"
+	default:
+		return ""
+	}
+}
+
+func getCaseSensitive(arrowType arrow.DataType) bool {
+	return arrowType.ID() == arrow.STRING
+}
+
+func getFixedPrecScale(arrowType arrow.DataType) bool {
+	switch arrowType.ID() {
+	case arrow.INT8, arrow.INT16, arrow.INT32, arrow.INT64,
+		arrow.UINT8, arrow.UINT16, arrow.UINT32, arrow.UINT64,
+		arrow.FLOAT32, arrow.FLOAT64:
+		return true
+	default:
+		return false
+	}
+}
+
+func getMinimumScale(arrowType arrow.DataType) int32 {
+	switch arrowType.ID() {
+	case arrow.DECIMAL:
+		return 0
+	default:
+		return 0
+	}
+}
+
+func getMaximumScale(arrowType arrow.DataType) int32 {
+	switch arrowType.ID() {
+	case arrow.DECIMAL:
+		decimalType := arrowType.(arrow.DecimalType)
+		return decimalType.GetScale()
+	default:
+		return 0
+	}
+}
+
+func getSQLDateTimeSub(arrowType arrow.DataType) int32 {
+	switch arrowType.ID() {
+	case arrow.DATE32, arrow.DATE64:
+		return 1 // SQL_CODE_DATE
+	case arrow.TIMESTAMP:
+		return 2 // SQL_CODE_TIMESTAMP
+	default:
+		return 0
+	}
+}
+
+func getNumPrecRadix(arrowType arrow.DataType) int32 {
+	switch arrowType.ID() {
+	case arrow.INT8, arrow.INT16, arrow.INT32, arrow.INT64,
+		arrow.UINT8, arrow.UINT16, arrow.UINT32, arrow.UINT64:
+		return 10
+	case arrow.FLOAT32, arrow.FLOAT64:
+		return 2
+	default:
+		return 0
+	}
 }
 
 func (r *metadataRepository) GetSQLInfo(ctx context.Context, ids []uint32) ([]models.SQLInfo, error) {

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -50,47 +52,52 @@ func New(logger zerolog.Logger) TypeConverter {
 	return tc
 }
 
-// DuckDBToArrowType converts a DuckDB type to an Arrow type.
-func (tc *typeConverter) DuckDBToArrowType(duckdbType string) (arrow.DataType, error) {
-	// Normalize type name
-	duckdbType = strings.ToLower(strings.TrimSpace(duckdbType))
-
-	// Handle parameterized types
-	if strings.HasPrefix(duckdbType, "varchar") || strings.HasPrefix(duckdbType, "char") {
-		return arrow.BinaryTypes.String, nil
-	}
-
+// ConvertDuckDBTypeToArrow converts a DuckDB type string to an Apache Arrow DataType.
+func ConvertDuckDBTypeToArrow(duckdbType string) (arrow.DataType, error) {
+	// Handle decimal or numeric types
 	if strings.HasPrefix(duckdbType, "decimal") || strings.HasPrefix(duckdbType, "numeric") {
-		// Parse precision and scale if available
-		// TODO:For now, use default decimal128
-		return &arrow.Decimal128Type{Precision: 38, Scale: 4}, nil
-	}
+		// Default precision and scale
+		precision := int32(38)
+		scale := int32(4)
 
-	if strings.HasPrefix(duckdbType, "timestamp") {
-		if strings.Contains(duckdbType, "tz") {
-			return arrow.FixedWidthTypes.Timestamp_us, nil
+		// Regular expression to match decimal(p,s) or numeric(p,s)
+		// Example: decimal(18,2) or numeric(10,3)
+		re := regexp.MustCompile(`^(decimal|numeric)\((\d+),(\d+)\)$`)
+		matches := re.FindStringSubmatch(strings.ToLower(duckdbType))
+
+		if len(matches) == 4 {
+			// Parse precision
+			p, err := strconv.ParseInt(matches[2], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid precision in %s: %w", duckdbType, err)
+			}
+			// Parse scale
+			s, err := strconv.ParseInt(matches[3], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid scale in %s: %w", duckdbType, err)
+			}
+
+			// Validate precision and scale
+			if p < 1 || p > 38 {
+				return nil, fmt.Errorf("precision %d out of range (1-38) for %s", p, duckdbType)
+			}
+			if s < 0 || s > p {
+				return nil, fmt.Errorf("scale %d out of range (0-%d) for %s", s, p, duckdbType)
+			}
+
+			precision = int32(p)
+			scale = int32(s)
+		} else if len(matches) != 0 {
+			// If the format is invalid but starts with decimal/numeric
+			return nil, fmt.Errorf("invalid decimal/numeric format: %s", duckdbType)
 		}
-		return arrow.FixedWidthTypes.Timestamp_us, nil
+
+		// Return Decimal128Type with parsed or default precision and scale
+		return &arrow.Decimal128Type{Precision: precision, Scale: scale}, nil
 	}
 
-	if strings.HasPrefix(duckdbType, "time") {
-		if strings.Contains(duckdbType, "tz") {
-			return arrow.FixedWidthTypes.Time64us, nil
-		}
-		return arrow.FixedWidthTypes.Time32s, nil
-	}
-
-	// Look up in type map
-	if arrowType, ok := tc.typeMap[duckdbType]; ok {
-		return arrowType, nil
-	}
-
-	// Handle unknown types as string
-	tc.logger.Warn().
-		Str("duckdb_type", duckdbType).
-		Msg("Unknown DuckDB type, defaulting to string")
-
-	return arrow.BinaryTypes.String, nil
+	// Handle other types (placeholder for additional type handling)
+	return nil, fmt.Errorf("unsupported DuckDB type: %s", duckdbType)
 }
 
 // ArrowToDuckDBType converts an Arrow type to a DuckDB type.
@@ -467,3 +474,12 @@ const (
 	java_sql_Types_TIME_WITH_TIMEZONE      = 2013
 	java_sql_Types_TIMESTAMP_WITH_TIMEZONE = 2014
 )
+
+// DuckDBToArrowType converts a DuckDB type string to an Apache Arrow DataType.
+func (tc *typeConverter) DuckDBToArrowType(duckdbType string) (arrow.DataType, error) {
+	duckdbType = strings.ToLower(strings.TrimSpace(duckdbType))
+	if arrowType, ok := tc.typeMap[duckdbType]; ok {
+		return arrowType, nil
+	}
+	return ConvertDuckDBTypeToArrow(duckdbType)
+}
