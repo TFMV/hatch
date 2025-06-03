@@ -39,6 +39,26 @@ Hatch is scaffolding, not a silo.
 
 ---
 
+## Benchmarks
+
+| Benchmark                       | N       | Time/op  | B/op     | Allocs/op |
+| ------------------------------- | ------- | -------- | -------- | --------- |
+| `DoGetStatement/Size=1000`      | 6,247   | 176.3 µs | 36.0 KB  | 873       |
+| `DoGetStatement/Size=10000`     | 1,422   | 849.3 µs | 290.5 KB | 10,203    |
+| `DoGetStatement/Size=100000`    | 158     | 7.48 ms  | 2.80 MB  | 103,461   |
+| `RecordBuilderPool/Get/Put`     | 133M    | 8.28 ns  | 0 B      | 0         |
+| `RecordBuilderPool/BuildRecord` | 744,535 | 1.52 µs  | 2.6 KB   | 31        |
+| `ByteBufferPool/Size=64`        | 34.8M   | 33.9 ns  | 24 B     | 1         |
+| `ByteBufferPool/Size=1024`      | 34.6M   | 34.4 ns  | 24 B     | 1         |
+| `ByteBufferPool/Size=4096`      | 34.6M   | 38.4 ns  | 24 B     | 1         |
+| `ByteBufferPool/Size=16384`     | 32.9M   | 36.2 ns  | 24 B     | 1         |
+| `ParallelQueryExecution`        | 19,440  | 65.0 µs  | 36.0 KB  | 873       |
+| `MemoryUsage/Size=1000`         | 20,521  | 57.6 µs  | 88.8 KB  | 82        |
+| `MemoryUsage/Size=10000`        | 2,025   | 603.2 µs | 1.34 MB  | 119       |
+| `MemoryUsage/Size=100000`       | 295     | 4.00 ms  | 9.85 MB  | 147       |
+
+---
+
 ## 🚀 Quick Start
 
 ### From Source
