@@ -19,9 +19,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/TFMV/flight/cmd/server/config"
-	"github.com/TFMV/flight/cmd/server/server"
-	"github.com/TFMV/flight/test/utils"
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/server"
+	"github.com/TFMV/hatch/test/utils"
 )
 
 // TestMetricsCollector implements the MetricsCollector interface for testing

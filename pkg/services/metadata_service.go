@@ -4,9 +4,9 @@ package services
 import (
 	"context"
 
-	"github.com/TFMV/flight/pkg/errors"
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/repositories"
+	"github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/repositories"
 )
 
 // metadataService implements MetadataService interface.

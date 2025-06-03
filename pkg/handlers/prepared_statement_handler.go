@@ -10,7 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	"github.com/TFMV/flight/pkg/services"
+	"github.com/TFMV/hatch/pkg/services"
 )
 
 // preparedStatementHandler implements PreparedStatementHandler interface.

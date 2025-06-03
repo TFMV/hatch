@@ -13,7 +13,7 @@ import (
 	_ "github.com/marcboeker/go-duckdb/v2"
 	"github.com/rs/zerolog"
 
-	pkgerrors "github.com/TFMV/flight/pkg/errors"
+	pkgerrors "github.com/TFMV/hatch/pkg/errors"
 )
 
 // Config represents pool configuration.

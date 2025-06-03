@@ -2,7 +2,7 @@ package utils
 
 import (
 	// "time" // time import is not strictly needed for noOpTimer anymore
-	server "github.com/TFMV/flight/cmd/server/server" // Import the server package
+	server "github.com/TFMV/hatch/cmd/server/server" // Import the server package
 )
 
 // Assuming server.Timer and server.MetricsCollector are accessible via this path

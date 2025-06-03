@@ -12,11 +12,11 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/flight/pkg/errors"
-	"github.com/TFMV/flight/pkg/infrastructure/converter"
-	"github.com/TFMV/flight/pkg/infrastructure/pool"
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/repositories"
+	"github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/hatch/pkg/infrastructure/converter"
+	"github.com/TFMV/hatch/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/repositories"
 )
 
 //——————————————————————————————————————————

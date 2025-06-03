@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/TFMV/flight/pkg/models"
+	"github.com/TFMV/hatch/pkg/models"
 )
 
 // Transaction represents a database transaction with Flight SQL semantics.

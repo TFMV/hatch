@@ -4,8 +4,8 @@ package server
 import (
 	"time"
 
-	"github.com/TFMV/flight/pkg/handlers"
-	"github.com/TFMV/flight/pkg/services"
+	"github.com/TFMV/hatch/pkg/handlers"
+	"github.com/TFMV/hatch/pkg/services"
 	"github.com/rs/zerolog"
 )
 

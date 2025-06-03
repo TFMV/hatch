@@ -1,4 +1,4 @@
-module github.com/TFMV/flight
+module github.com/TFMV/hatch
 
 go 1.24
 

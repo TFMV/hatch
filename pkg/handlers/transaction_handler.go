@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/services"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/services"
 )
 
 // transactionHandler implements TransactionHandler interface.

@@ -10,9 +10,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	flightErrors "github.com/TFMV/flight/pkg/errors"
-	"github.com/TFMV/flight/pkg/models"
-	"github.com/TFMV/flight/pkg/services"
+	flightErrors "github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/services"
 	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 )
 
