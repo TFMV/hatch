@@ -344,14 +344,18 @@ func BenchmarkConcurrentAccess(b *testing.B) {
 						// Create a temporary table with unique name
 						_, err = tx.Exec(fmt.Sprintf("CREATE TABLE %s AS SELECT * FROM read_parquet('%s')", tableName, filePath))
 						if err != nil {
-							tx.Rollback()
+							if err := tx.Rollback(); err != nil {
+								b.Fatalf("Failed to rollback transaction: %v", err)
+							}
 							continue
 						}
 
 						// Clean up
 						_, err = tx.Exec(fmt.Sprintf("DROP TABLE %s", tableName))
 						if err != nil {
-							tx.Rollback()
+							if err := tx.Rollback(); err != nil {
+								b.Fatalf("Failed to rollback transaction: %v", err)
+							}
 							continue
 						}
 
