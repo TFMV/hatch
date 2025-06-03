@@ -1,10 +1,12 @@
-// Package duckdb provides DuckDB-specific repository implementations.
+// Package duckdb provides DuckDB‑specific repository implementations.
 package duckdb
 
 import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -15,109 +17,111 @@ import (
 	"github.com/TFMV/flight/pkg/repositories"
 )
 
-// transactionRepository implements repositories.TransactionRepository for DuckDB.
+//───────────────────────────────────
+// Repository
+//───────────────────────────────────
+
+// transactionRepository implements repositories.TransactionRepository.
 type transactionRepository struct {
-	pool         pool.ConnectionPool
-	transactions sync.Map // map[string]*duckdbTransaction
-	logger       zerolog.Logger
+	pool  pool.ConnectionPool
+	log   zerolog.Logger
+	txMap sync.Map // key = id, val = *duckdbTransaction
 }
 
-// NewTransactionRepository creates a new DuckDB transaction repository.
-func NewTransactionRepository(pool pool.ConnectionPool, logger zerolog.Logger) repositories.TransactionRepository {
+func NewTransactionRepository(p pool.ConnectionPool, lg zerolog.Logger) repositories.TransactionRepository {
 	return &transactionRepository{
-		pool:   pool,
-		logger: logger,
+		pool: p,
+		log:  lg.With().Str("repo", "txn").Logger(),
 	}
 }
 
-// Begin starts a new transaction.
-func (r *transactionRepository) Begin(ctx context.Context, opts models.TransactionOptions) (repositories.Transaction, error) {
-	r.logger.Debug().
-		Str("isolation_level", string(opts.IsolationLevel)).
-		Bool("read_only", opts.ReadOnly).
-		Msg("Beginning transaction")
+// Begin starts a new SQL transaction.
+func (r *transactionRepository) Begin(ctx context.Context, opt models.TransactionOptions) (repositories.Transaction, error) {
+	r.log.Debug().
+		Str("iso", string(opt.IsolationLevel)).
+		Bool("ro", opt.ReadOnly).
+		Msg("begin")
 
-	// Get connection from pool
-	db, err := r.pool.Get(ctx)
+	conn, err := r.pool.Get(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get database connection")
+		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "get conn")
 	}
 
-	// Start transaction with options
-	txOpts := &sql.TxOptions{
-		Isolation: r.mapIsolationLevel(opts.IsolationLevel),
-		ReadOnly:  opts.ReadOnly,
-	}
-
-	tx, err := db.BeginTx(ctx, txOpts)
+	sqlTx, err := conn.BeginTx(ctx, &sql.TxOptions{
+		Isolation: mapIsolation(opt.IsolationLevel),
+		ReadOnly:  opt.ReadOnly,
+	})
 	if err != nil {
-		r.logger.Error().Err(err).Msg("Failed to begin transaction")
-		return nil, errors.Wrap(err, errors.CodeTransactionFailed, "failed to begin transaction")
+		return nil, errors.Wrap(err, errors.CodeTransactionFailed, "begin tx")
 	}
 
-	// Create transaction wrapper
+	sqlConn, err := conn.Conn(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "get conn")
+	}
+
 	txn := &duckdbTransaction{
-		id:       uuid.New().String(),
-		tx:       tx,
-		active:   true,
-		readOnly: opts.ReadOnly,
+		id:       uuid.NewString(),
+		sqlTx:    sqlTx,
+		conn:     sqlConn,
+		readOnly: opt.ReadOnly,
+		started:  time.Now(),
 	}
+	r.store(txn)
 
-	// Store in map
-	r.transactions.Store(txn.id, txn)
-
-	r.logger.Info().Str("transaction_id", txn.id).Msg("Transaction started")
-
+	r.log.Info().Str("id", txn.id).Msg("txn started")
 	return txn, nil
 }
 
-// Get retrieves a transaction by ID.
-func (r *transactionRepository) Get(ctx context.Context, id string) (repositories.Transaction, error) {
-	r.logger.Debug().Str("transaction_id", id).Msg("Getting transaction")
-
-	if val, ok := r.transactions.Load(id); ok {
-		txn := val.(*duckdbTransaction)
-		if txn.IsActive() {
-			return txn, nil
-		}
-		// Remove inactive transaction
-		r.transactions.Delete(id)
+// Get returns an active transaction or ErrTransactionNotFound.
+func (r *transactionRepository) Get(_ context.Context, id string) (repositories.Transaction, error) {
+	if txn, ok := r.load(id); ok && txn.IsActive() {
+		return txn, nil
 	}
-
 	return nil, errors.ErrTransactionNotFound.WithDetail("transaction_id", id)
 }
 
 // List returns all active transactions.
-func (r *transactionRepository) List(ctx context.Context) ([]repositories.Transaction, error) {
-	r.logger.Debug().Msg("Listing transactions")
-
-	var transactions []repositories.Transaction
-
-	r.transactions.Range(func(key, value interface{}) bool {
-		txn := value.(*duckdbTransaction)
-		if txn.IsActive() {
-			transactions = append(transactions, txn)
+func (r *transactionRepository) List(_ context.Context) ([]repositories.Transaction, error) {
+	var list []repositories.Transaction
+	r.txMap.Range(func(_, v any) bool {
+		t := v.(*duckdbTransaction)
+		if t.IsActive() {
+			list = append(list, t)
 		} else {
-			// Clean up inactive transaction
-			r.transactions.Delete(key)
+			r.delete(t.id)
 		}
 		return true
 	})
-
-	return transactions, nil
+	return list, nil
 }
 
-// Remove removes a transaction from the repository.
-func (r *transactionRepository) Remove(ctx context.Context, id string) error {
-	r.logger.Debug().Str("transaction_id", id).Msg("Removing transaction")
-
-	r.transactions.Delete(id)
+// Remove deletes a transaction record (no commit/rollback).
+func (r *transactionRepository) Remove(_ context.Context, id string) error {
+	r.delete(id)
 	return nil
 }
 
-// mapIsolationLevel maps our isolation level to sql.IsolationLevel.
-func (r *transactionRepository) mapIsolationLevel(level models.IsolationLevel) sql.IsolationLevel {
-	switch level {
+//───────────────────────────────────
+// internal map helpers
+//───────────────────────────────────
+
+func (r *transactionRepository) store(t *duckdbTransaction) { r.txMap.Store(t.id, t) }
+func (r *transactionRepository) load(id string) (*duckdbTransaction, bool) {
+	v, ok := r.txMap.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*duckdbTransaction), true
+}
+func (r *transactionRepository) delete(id string) { r.txMap.Delete(id) }
+
+//───────────────────────────────────
+// isolation mapping
+//───────────────────────────────────
+
+func mapIsolation(lvl models.IsolationLevel) sql.IsolationLevel {
+	switch lvl {
 	case models.IsolationLevelReadUncommitted:
 		return sql.LevelReadUncommitted
 	case models.IsolationLevelReadCommitted:
@@ -131,68 +135,58 @@ func (r *transactionRepository) mapIsolationLevel(level models.IsolationLevel) s
 	}
 }
 
-// duckdbTransaction implements repositories.Transaction for DuckDB.
+//───────────────────────────────────
+// duckdbTransaction
+//───────────────────────────────────
+
 type duckdbTransaction struct {
 	id       string
-	tx       *sql.Tx
-	active   bool
+	sqlTx    *sql.Tx
+	conn     *sql.Conn // returned to pool on Commit/Rollback
 	readOnly bool
-	mu       sync.RWMutex
+
+	started time.Time
+	active  atomic.Bool
 }
 
-// ID returns the transaction ID.
-func (t *duckdbTransaction) ID() string {
-	return t.id
-}
+func (t *duckdbTransaction) ID() string { return t.id }
 
-// Commit commits the transaction.
 func (t *duckdbTransaction) Commit(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if !t.active {
-		return errors.New(errors.CodeTransactionFailed, "transaction is not active")
+	if !t.setInactive() {
+		return errors.New(errors.CodeTransactionFailed, "transaction not active")
 	}
-
-	if err := t.tx.Commit(); err != nil {
-		return errors.Wrap(err, errors.CodeTransactionFailed, "failed to commit transaction")
+	if err := t.sqlTx.Commit(); err != nil {
+		return errors.Wrap(err, errors.CodeTransactionFailed, "commit")
 	}
-
-	t.active = false
+	_ = t.conn.Close()
 	return nil
 }
 
-// Rollback rolls back the transaction.
 func (t *duckdbTransaction) Rollback(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if !t.active {
-		return errors.New(errors.CodeTransactionFailed, "transaction is not active")
+	if !t.setInactive() {
+		return errors.New(errors.CodeTransactionFailed, "transaction not active")
 	}
-
-	if err := t.tx.Rollback(); err != nil {
-		return errors.Wrap(err, errors.CodeTransactionFailed, "failed to rollback transaction")
+	if err := t.sqlTx.Rollback(); err != nil {
+		return errors.Wrap(err, errors.CodeTransactionFailed, "rollback")
 	}
-
-	t.active = false
+	_ = t.conn.Close()
 	return nil
 }
 
-// IsActive returns true if the transaction is still active.
-func (t *duckdbTransaction) IsActive() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.active
+func (t *duckdbTransaction) IsActive() bool { return t.active.Load() }
+
+func (t *duckdbTransaction) GetDBTx() *sql.Tx {
+	if t.IsActive() {
+		return t.sqlTx
+	}
+	return nil
 }
 
-// GetDBTx returns the underlying database transaction.
-func (t *duckdbTransaction) GetDBTx() *sql.Tx {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+// setInactive atomically flips the active flag; returns true if it was active.
+func (t *duckdbTransaction) setInactive() bool { return t.active.Swap(false) }
 
-	if !t.active {
-		return nil
-	}
-	return t.tx
+// ensure active on creation
+func init() {
+	var dummy duckdbTransaction
+	dummy.active.Store(true)
 }

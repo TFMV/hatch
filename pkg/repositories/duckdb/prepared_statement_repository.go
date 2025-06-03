@@ -1,10 +1,11 @@
-// Package duckdb provides DuckDB-specific repository implementations.
+// Package duckdb provides DuckDB‑specific repository implementations.
 package duckdb
 
 import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -18,240 +19,229 @@ import (
 	"github.com/TFMV/flight/pkg/repositories"
 )
 
-// preparedStatementRepository implements repositories.PreparedStatementRepository for DuckDB.
+//——————————————————————————————————————————
+// Repository
+//——————————————————————————————————————————
+
+// preparedStatementRepository implements repositories.PreparedStatementRepository.
 type preparedStatementRepository struct {
 	pool       pool.ConnectionPool
-	allocator  memory.Allocator
+	alloc      memory.Allocator
+	log        zerolog.Logger
 	statements sync.Map // map[string]*preparedStatement
-	logger     zerolog.Logger
 }
 
-// NewPreparedStatementRepository creates a new DuckDB prepared statement repository.
-func NewPreparedStatementRepository(pool pool.ConnectionPool, allocator memory.Allocator, logger zerolog.Logger) repositories.PreparedStatementRepository {
+func NewPreparedStatementRepository(p pool.ConnectionPool, a memory.Allocator, lg zerolog.Logger) repositories.PreparedStatementRepository {
 	return &preparedStatementRepository{
-		pool:      pool,
-		allocator: allocator,
-		logger:    logger,
+		pool:  p,
+		alloc: a,
+		log:   lg.With().Str("repo", "prepared_stmt").Logger(),
 	}
 }
 
-// Store stores a prepared statement.
-func (r *preparedStatementRepository) Store(ctx context.Context, stmt *models.PreparedStatement) error {
-	r.logger.Debug().
-		Str("handle", stmt.Handle).
-		Str("query", stmt.Query).
-		Msg("Storing prepared statement")
+//——————————————————————————————————————————
+// Public API
+//——————————————————————————————————————————
 
-	// Create internal prepared statement
-	ps := &preparedStatement{
-		model:     stmt,
-		createdAt: time.Now(),
-	}
-
-	// Store in map
-	r.statements.Store(stmt.Handle, ps)
-
+func (r *preparedStatementRepository) Store(_ context.Context, ps *models.PreparedStatement) error {
+	r.log.Debug().Str("handle", ps.Handle).Msg("store prepared stmt")
+	r.statements.Store(ps.Handle, &preparedStatement{model: ps, createdAt: now()})
 	return nil
 }
 
-// Get retrieves a prepared statement by handle.
-func (r *preparedStatementRepository) Get(ctx context.Context, handle string) (*models.PreparedStatement, error) {
-	r.logger.Debug().Str("handle", handle).Msg("Getting prepared statement")
-
-	if val, ok := r.statements.Load(handle); ok {
-		ps := val.(*preparedStatement)
-		return ps.model, nil
-	}
-
-	return nil, errors.ErrStatementNotFound.WithDetail("handle", handle)
-}
-
-// Remove removes a prepared statement.
-func (r *preparedStatementRepository) Remove(ctx context.Context, handle string) error {
-	r.logger.Debug().Str("handle", handle).Msg("Removing prepared statement")
-
-	if val, ok := r.statements.LoadAndDelete(handle); ok {
-		ps := val.(*preparedStatement)
-		// Close the underlying statement if it exists
-		if ps.stmt != nil {
-			if err := ps.stmt.Close(); err != nil {
-				r.logger.Warn().Err(err).Str("handle", handle).Msg("Failed to close prepared statement")
-			}
-		}
-		return nil
-	}
-
-	return errors.ErrStatementNotFound.WithDetail("handle", handle)
-}
-
-// ExecuteQuery executes a prepared query statement.
-func (r *preparedStatementRepository) ExecuteQuery(ctx context.Context, handle string, params [][]interface{}) (*models.QueryResult, error) {
-	r.logger.Debug().
-		Str("handle", handle).
-		Int("param_batches", len(params)).
-		Msg("Executing prepared query")
-
-	// Get prepared statement
-	val, ok := r.statements.Load(handle)
+func (r *preparedStatementRepository) Get(_ context.Context, h string) (*models.PreparedStatement, error) {
+	ps, ok := r.loadPS(h)
 	if !ok {
-		return nil, errors.ErrStatementNotFound.WithDetail("handle", handle)
+		return nil, errors.ErrStatementNotFound.WithDetail("handle", h)
+	}
+	return ps.model, nil
+}
+
+func (r *preparedStatementRepository) Remove(_ context.Context, h string) error {
+	ps, ok := r.deletePS(h)
+	if !ok {
+		return errors.ErrStatementNotFound.WithDetail("handle", h)
+	}
+	if ps.stmt != nil {
+		_ = ps.stmt.Close() // log only on failure
+	}
+	return nil
+}
+
+func (r *preparedStatementRepository) ExecuteQuery(ctx context.Context, h string, params [][]interface{}) (*models.QueryResult, error) {
+	ps, ok := r.loadPS(h)
+	if !ok {
+		return nil, errors.ErrStatementNotFound.WithDetail("handle", h)
 	}
 
-	ps := val.(*preparedStatement)
-
-	// For now, we'll execute the query directly
-	// In a real implementation, we would use the prepared statement
-	db, err := r.pool.Get(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get database connection")
-	}
-
-	// Execute with parameters if provided
+	// acquire db connection & prepare stmt lazily
 	var rows *sql.Rows
-	if len(params) > 0 && len(params[0]) > 0 {
-		rows, err = db.QueryContext(ctx, ps.model.Query, params[0]...)
-	} else {
-		rows, err = db.QueryContext(ctx, ps.model.Query)
-	}
-
-	if err != nil {
-		r.logger.Error().Err(err).Str("query", ps.model.Query).Msg("Query execution failed")
-		return nil, errors.Wrap(err, errors.CodeQueryFailed, "failed to execute prepared query")
-	}
-
-	// Create batch reader
-	reader, err := converter.NewBatchReader(r.allocator, rows, r.logger)
-	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeInternal, "failed to create batch reader")
-	}
-
-	// Create record channel
-	records := make(chan arrow.Record, 10)
-
-	// Start goroutine to read batches
-	go func() {
-		defer close(records)
-		defer reader.Release()
-
-		totalRows := int64(0)
-
-		for reader.Next() {
-			record := reader.Record()
-			if record == nil {
-				continue
-			}
-
-			// Retain the record before sending
-			record.Retain()
-			totalRows += record.NumRows()
-
-			select {
-			case records <- record:
-			case <-ctx.Done():
-				record.Release()
-				return
-			}
+	if err := r.withConn(ctx, func(conn *sql.Conn) (err error) {
+		if err = ps.ensurePrepared(ctx, conn); err != nil {
+			return err
 		}
 
-		if err := reader.Err(); err != nil {
-			r.logger.Error().Err(err).Msg("Error reading query results")
+		if batch := firstBatch(params); batch != nil {
+			rows, err = ps.stmt.QueryContext(ctx, batch...)
+		} else {
+			rows, err = ps.stmt.QueryContext(ctx)
 		}
+		return
+	}); err != nil {
+		return nil, err
+	}
 
-		r.logger.Debug().Int64("total_rows", totalRows).Msg("Query results read complete")
-	}()
+	reader, err := converter.NewBatchReader(r.alloc, rows, r.log)
+	if err != nil {
+		return nil, errors.Wrap(err, errors.CodeInternal, "new batch reader")
+	}
 
-	// Update execution count
-	ps.model.ExecutionCount++
-	ps.model.LastUsedAt = time.Now()
+	out := make(chan arrow.Record, 8)
+	go streamRecords(ctx, reader, out, r.log)
 
-	return &models.QueryResult{
-		Schema:  reader.Schema(),
-		Records: records,
-	}, nil
+	ps.bumpUsage()
+	return &models.QueryResult{Schema: reader.Schema(), Records: out}, nil
 }
 
-// ExecuteUpdate executes a prepared update statement.
-func (r *preparedStatementRepository) ExecuteUpdate(ctx context.Context, handle string, params [][]interface{}) (*models.UpdateResult, error) {
-	r.logger.Debug().
-		Str("handle", handle).
-		Int("param_batches", len(params)).
-		Msg("Executing prepared update")
-
-	// Get prepared statement
-	val, ok := r.statements.Load(handle)
+func (r *preparedStatementRepository) ExecuteUpdate(ctx context.Context, h string, params [][]interface{}) (*models.UpdateResult, error) {
+	ps, ok := r.loadPS(h)
 	if !ok {
-		return nil, errors.ErrStatementNotFound.WithDetail("handle", handle)
+		return nil, errors.ErrStatementNotFound.WithDetail("handle", h)
 	}
 
-	ps := val.(*preparedStatement)
+	var (
+		result sql.Result
+		start  = time.Now()
+	)
 
-	// Get database connection
-	db, err := r.pool.Get(ctx)
+	err := r.withConn(ctx, func(conn *sql.Conn) error {
+		if err := ps.ensurePrepared(ctx, conn); err != nil {
+			return err
+		}
+		var execErr error
+		if batch := firstBatch(params); batch != nil {
+			result, execErr = ps.stmt.ExecContext(ctx, batch...)
+		} else {
+			result, execErr = ps.stmt.ExecContext(ctx)
+		}
+		return execErr
+	})
 	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get database connection")
+		return nil, err
 	}
 
-	start := time.Now()
+	rows, _ := result.RowsAffected() // ignore error, ‑1 on unknown
+	ps.bumpUsage()
 
-	// Execute with parameters if provided
-	var result sql.Result
-	if len(params) > 0 && len(params[0]) > 0 {
-		result, err = db.ExecContext(ctx, ps.model.Query, params[0]...)
-	} else {
-		result, err = db.ExecContext(ctx, ps.model.Query)
-	}
+	dur := time.Since(start)
+	r.log.Debug().
+		Str("handle", h).
+		Int64("rows", rows).
+		Dur("elapsed", dur).
+		Msg("update ok")
 
-	if err != nil {
-		r.logger.Error().Err(err).Str("statement", ps.model.Query).Msg("Update execution failed")
-		return nil, errors.Wrap(err, errors.CodeQueryFailed, "failed to execute prepared update")
-	}
-
-	// Get rows affected
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		r.logger.Warn().Err(err).Msg("Failed to get rows affected")
-		rowsAffected = -1
-	}
-
-	executionTime := time.Since(start)
-
-	// Update execution count
-	ps.model.ExecutionCount++
-	ps.model.LastUsedAt = time.Now()
-
-	r.logger.Debug().
-		Int64("rows_affected", rowsAffected).
-		Dur("execution_time", executionTime).
-		Msg("Update executed successfully")
-
-	return &models.UpdateResult{
-		RowsAffected:  rowsAffected,
-		ExecutionTime: executionTime,
-	}, nil
+	return &models.UpdateResult{RowsAffected: rows, ExecutionTime: dur}, nil
 }
 
-// List returns all prepared statements for a transaction.
-func (r *preparedStatementRepository) List(ctx context.Context, transactionID string) ([]*models.PreparedStatement, error) {
-	r.logger.Debug().Str("transaction_id", transactionID).Msg("Listing prepared statements")
-
-	var statements []*models.PreparedStatement
-
-	r.statements.Range(func(key, value interface{}) bool {
-		ps := value.(*preparedStatement)
-		// If transactionID is empty, return all statements
-		// Otherwise, only return statements for the specified transaction
-		if transactionID == "" || ps.model.TransactionID == transactionID {
-			statements = append(statements, ps.model)
+func (r *preparedStatementRepository) List(_ context.Context, txID string) ([]*models.PreparedStatement, error) {
+	var list []*models.PreparedStatement
+	r.statements.Range(func(_, v any) bool {
+		ps := v.(*preparedStatement)
+		if txID == "" || ps.model.TransactionID == txID {
+			list = append(list, ps.model)
 		}
 		return true
 	})
-
-	return statements, nil
+	return list, nil
 }
 
-// preparedStatement holds internal state for a prepared statement.
+//——————————————————————————————————————————
+// internal helpers
+//——————————————————————————————————————————
+
+func (r *preparedStatementRepository) withConn(ctx context.Context, fn func(*sql.Conn) error) error {
+	db, err := r.pool.Get(ctx)
+	if err != nil {
+		return errors.Wrap(err, errors.CodeConnectionFailed, "get conn")
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return errors.Wrap(err, errors.CodeConnectionFailed, "get conn")
+	}
+	return fn(conn)
+}
+
+func (r *preparedStatementRepository) loadPS(h string) (*preparedStatement, bool) {
+	if v, ok := r.statements.Load(h); ok {
+		return v.(*preparedStatement), true
+	}
+	return nil, false
+}
+func (r *preparedStatementRepository) deletePS(h string) (*preparedStatement, bool) {
+	if v, ok := r.statements.LoadAndDelete(h); ok {
+		return v.(*preparedStatement), true
+	}
+	return nil, false
+}
+
+func firstBatch(b [][]interface{}) []interface{} {
+	if len(b) > 0 && len(b[0]) > 0 {
+		return b[0]
+	}
+	return nil
+}
+
+// streamRecords copies Arrow records from reader to chan with proper Retain/Release.
+func streamRecords(ctx context.Context, br *converter.BatchReader, out chan arrow.Record, log zerolog.Logger) {
+	defer close(out)
+	defer br.Release()
+
+	var total int64
+	for br.Next() {
+		rec := br.Record()
+		if rec == nil {
+			continue
+		}
+		rec.Retain()
+		total += rec.NumRows()
+
+		select {
+		case out <- rec:
+			// consumer will Release()
+		case <-ctx.Done():
+			rec.Release()
+			return
+		}
+	}
+	if err := br.Err(); err != nil {
+		log.Error().Err(err).Msg("batch reader")
+	}
+	log.Debug().Int64("rows", total).Msg("stream complete")
+}
+
+// now is var for deterministic tests.
+var now = time.Now
+
+//——————————————————————————————————————————
+// internal prepared stmt wrapper
+//——————————————————————————————————————————
+
 type preparedStatement struct {
 	model     *models.PreparedStatement
-	stmt      *sql.Stmt // Optional: actual prepared statement
+	stmt      *sql.Stmt
 	createdAt time.Time
+	once      sync.Once
+}
+
+func (p *preparedStatement) ensurePrepared(ctx context.Context, conn *sql.Conn) error {
+	var err error
+	p.once.Do(func() {
+		p.stmt, err = conn.PrepareContext(ctx, p.model.Query)
+	})
+	return err
+}
+
+func (p *preparedStatement) bumpUsage() {
+	atomic.AddInt64(&p.model.ExecutionCount, 1)
+	p.model.LastUsedAt = now()
 }

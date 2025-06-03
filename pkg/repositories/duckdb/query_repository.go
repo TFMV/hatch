@@ -1,4 +1,4 @@
-// Package duckdb provides DuckDB-specific repository implementations.
+// Package duckdb provides DuckDB‑specific repository implementations.
 package duckdb
 
 import (
@@ -17,225 +17,188 @@ import (
 	"github.com/TFMV/flight/pkg/repositories"
 )
 
+//───────────────────────────────────
+// Repository
+//───────────────────────────────────
+
 // queryRepository implements repositories.QueryRepository for DuckDB.
 type queryRepository struct {
-	pool      pool.ConnectionPool
-	allocator memory.Allocator
-	logger    zerolog.Logger
+	pool  pool.ConnectionPool
+	alloc memory.Allocator
+	log   zerolog.Logger
 }
 
-// NewQueryRepository creates a new DuckDB query repository.
-func NewQueryRepository(pool pool.ConnectionPool, allocator memory.Allocator, logger zerolog.Logger) repositories.QueryRepository {
+func NewQueryRepository(p pool.ConnectionPool, a memory.Allocator, lg zerolog.Logger) repositories.QueryRepository {
 	return &queryRepository{
-		pool:      pool,
-		allocator: allocator,
-		logger:    logger,
+		pool:  p,
+		alloc: a,
+		log:   lg.With().Str("repo", "query").Logger(),
 	}
 }
 
-// ExecuteQuery executes a query and returns results.
-func (r *queryRepository) ExecuteQuery(ctx context.Context, query string, txn repositories.Transaction, args ...interface{}) (*models.QueryResult, error) {
-	r.logger.Debug().
-		Str("query", query).
-		Bool("has_transaction", txn != nil).
-		Int("args_count", len(args)).
-		Msg("Executing query")
+//───────────────────────────────────
+// Public API
+//───────────────────────────────────
 
-	// Get database connection or transaction
-	var rows *sql.Rows
+func (r *queryRepository) ExecuteQuery(
+	ctx context.Context,
+	query string,
+	txn repositories.Transaction,
+	args ...interface{},
+) (*models.QueryResult, error) {
 
-	if txn != nil {
-		// Use transaction
-		dbTx := txn.GetDBTx()
-		if dbTx == nil {
-			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
-		}
+	r.log.Debug().
+		Str("sql", truncate(query, 120)).
+		Bool("in_tx", txn != nil).
+		Int("args", len(args)).
+		Msg("execute query")
 
-		var err error
-		if len(args) > 0 {
-			rows, err = dbTx.QueryContext(ctx, query, args...)
-		} else {
-			rows, err = dbTx.QueryContext(ctx, query)
-		}
+	qr, err := withQuerier(r, ctx, txn, func(q querier) (*models.QueryResult, error) {
+		rows, err := q.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute query with transaction: %s", query)
+			return nil, errors.Wrap(err, errors.CodeQueryFailed, "query")
 		}
-	} else {
-		// Use connection pool
-		db, err := r.pool.Get(ctx)
+
+		reader, err := converter.NewBatchReader(r.alloc, rows, r.log)
 		if err != nil {
-			return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
+			return nil, errors.Wrap(err, errors.CodeInternal, "batch reader")
 		}
 
-		if len(args) > 0 {
-			rows, err = db.QueryContext(ctx, query, args...)
-		} else {
-			rows, err = db.QueryContext(ctx, query)
-		}
-		if err != nil {
-			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute query: %s", query)
-		}
-	}
+		out := make(chan arrow.Record, 8)
+		go streamQueryRecords(ctx, reader, out, r.log)
 
-	// Create batch reader
-	reader, err := converter.NewBatchReader(r.allocator, rows, r.logger)
-	if err != nil {
-		// rows are already closed by NewBatchReader on error
-		return nil, errors.Wrap(err, errors.CodeInternal, "failed to create batch reader")
-	}
-
-	// Create record channel
-	records := make(chan arrow.Record, 10)
-
-	// Start goroutine to read batches
-	go func() {
-		defer close(records)
-		defer reader.Release()
-
-		totalRows := int64(0)
-
-		for reader.Next() {
-			record := reader.Record()
-			if record == nil {
-				continue
-			}
-
-			// Retain the record before sending
-			record.Retain()
-			totalRows += record.NumRows()
-
-			// Log before sending
-			r.logger.Debug().
-				Int64("exec_query_stream_PRE_SEND_rec_num_cols", record.NumCols()).
-				Int("exec_query_stream_PRE_SEND_rec_schema_fields", record.Schema().NumFields()).
-				Msg("ExecuteQueryStream: State of record BEFORE sending to channel")
-
-			select {
-			case records <- record:
-				// Log after successful send, on sender side
-				r.logger.Debug().
-					Int64("exec_query_stream_POST_SEND_rec_num_cols", record.NumCols()).
-					Int("exec_query_stream_POST_SEND_rec_schema_fields", record.Schema().NumFields()).
-					Msg("ExecuteQueryStream: State of record on SENDER side AFTER sending to channel")
-			case <-ctx.Done():
-				r.logger.Warn().Msg("ExecuteQueryStream: context done before sending record, record will be released by BatchReader or QueryService.")
-				record.Release()
-				return
-			}
-
-			// Whether the record was sent or context was done (and we are about to loop or exit),
-			// the Retain() made by this goroutine for this specific record instance must be balanced.
-			record.Release()
-		}
-
-		if err := reader.Err(); err != nil {
-			r.logger.Error().Err(err).Msg("Error reading query results")
-		}
-
-		r.logger.Debug().Int64("total_rows", totalRows).Msg("Query results read complete")
-	}()
-
-	return &models.QueryResult{
-		Schema:  reader.Schema(),
-		Records: records,
-	}, nil
+		return &models.QueryResult{
+			Schema:  reader.Schema(),
+			Records: out,
+		}, nil
+	})
+	return qr, err
 }
 
-// ExecuteUpdate executes an update statement and returns affected rows.
-func (r *queryRepository) ExecuteUpdate(ctx context.Context, statement string, txn repositories.Transaction, args ...interface{}) (*models.UpdateResult, error) {
-	r.logger.Debug().
-		Str("statement", statement).
-		Bool("has_transaction", txn != nil).
-		Int("args_count", len(args)).
-		Msg("Executing update")
+func (r *queryRepository) ExecuteUpdate(
+	ctx context.Context,
+	sqlStmt string,
+	txn repositories.Transaction,
+	args ...interface{},
+) (*models.UpdateResult, error) {
+
+	r.log.Debug().
+		Str("sql", truncate(sqlStmt, 120)).
+		Bool("in_tx", txn != nil).
+		Int("args", len(args)).
+		Msg("execute update")
 
 	start := time.Now()
 
-	// Get database connection or transaction
-	var result sql.Result
-
-	if txn != nil {
-		// Use transaction
-		dbTx := txn.GetDBTx()
-		if dbTx == nil {
-			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
-		}
-
-		var err error
-		if len(args) > 0 {
-			result, err = dbTx.ExecContext(ctx, statement, args...)
-		} else {
-			result, err = dbTx.ExecContext(ctx, statement)
-		}
+	ur, err := withQuerier(r, ctx, txn, func(q querier) (*models.UpdateResult, error) {
+		res, err := q.ExecContext(ctx, sqlStmt, args...)
 		if err != nil {
-			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute update with transaction: %s", statement)
+			return nil, errors.Wrap(err, errors.CodeQueryFailed, "exec")
 		}
-	} else {
-		// Use connection pool
-		db, err := r.pool.Get(ctx)
-		if err != nil {
-			return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
-		}
+		rows, _ := res.RowsAffected() // ignore error, ‑1 on unknown
+		return &models.UpdateResult{
+			RowsAffected:  rows,
+			ExecutionTime: time.Since(start),
+		}, nil
+	})
 
-		if len(args) > 0 {
-			result, err = db.ExecContext(ctx, statement, args...)
-		} else {
-			result, err = db.ExecContext(ctx, statement)
-		}
-		if err != nil {
-			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to execute update: %s", statement)
-		}
+	if err == nil {
+		r.log.Debug().
+			Int64("rows", ur.RowsAffected).
+			Dur("elapsed", ur.ExecutionTime).
+			Msg("update ok")
 	}
-
-	// Get rows affected
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeQueryFailed, "failed to get rows affected")
-	}
-
-	executionTime := time.Since(start)
-
-	r.logger.Debug().
-		Int64("rows_affected", rowsAffected).
-		Dur("execution_time", executionTime).
-		Msg("Update executed successfully")
-
-	return &models.UpdateResult{
-		RowsAffected:  rowsAffected,
-		ExecutionTime: executionTime,
-	}, nil
+	return ur, err
 }
 
-// Prepare prepares a statement for later execution.
-func (r *queryRepository) Prepare(ctx context.Context, query string, txn repositories.Transaction) (*sql.Stmt, error) {
-	r.logger.Debug().
-		Str("query", query).
-		Bool("has_transaction", txn != nil).
-		Msg("Preparing statement")
+func (r *queryRepository) Prepare(
+	ctx context.Context,
+	query string,
+	txn repositories.Transaction,
+) (*sql.Stmt, error) {
+
+	r.log.Debug().
+		Str("sql", truncate(query, 120)).
+		Bool("in_tx", txn != nil).
+		Msg("prepare")
+
+	stmt, err := withQuerier(r, ctx, txn, func(q querier) (*sql.Stmt, error) {
+		ps, err := q.PrepareContext(ctx, query)
+		return ps, errors.Wrap(err, errors.CodeQueryFailed, "prepare")
+	})
+	return stmt, err
+}
+
+//───────────────────────────────────
+// Internal helpers
+//───────────────────────────────────
+
+// querier is the common subset implemented by *sql.Conn and *sql.Tx.
+type querier interface {
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+	PrepareContext(context.Context, string) (*sql.Stmt, error)
+}
+
+// withQuerier executes a function with either a transaction or connection.
+func withQuerier[T any](
+	r *queryRepository,
+	ctx context.Context,
+	txn repositories.Transaction,
+	fn func(querier) (T, error),
+) (T, error) {
+	// When returning early we need zero value of T
+	var zero T
 
 	if txn != nil {
-		// Use transaction
-		dbTx := txn.GetDBTx()
-		if dbTx == nil {
-			return nil, errors.New(errors.CodeTransactionFailed, "transaction has no underlying database transaction")
+		tx := txn.GetDBTx()
+		if tx == nil {
+			return zero, errors.New(errors.CodeTransactionFailed, "nil sql.Tx in Transaction")
 		}
+		return fn(tx)
+	}
 
-		stmt, err := dbTx.PrepareContext(ctx, query)
-		if err != nil {
-			return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to prepare statement with transaction: %s", query)
+	conn, err := r.pool.Get(ctx)
+	if err != nil {
+		return zero, errors.Wrap(err, errors.CodeConnectionFailed, "get conn")
+	}
+	// Do not defer conn.Close(); rows/stmt hold the conn until closed.
+
+	return fn(conn)
+}
+
+// streamQueryRecords sends Arrow records to channel with correct ref‑count handling.
+func streamQueryRecords(ctx context.Context, br *converter.BatchReader, out chan arrow.Record, log zerolog.Logger) {
+	defer close(out)
+	defer br.Release()
+
+	var rows int64
+	for br.Next() {
+		rec := br.Record()
+		if rec == nil {
+			continue
 		}
-		return stmt, nil
-	}
+		rec.Retain()
+		rows += rec.NumRows()
 
-	// Use connection pool
-	db, err := r.pool.Get(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, errors.CodeConnectionFailed, "failed to get connection from pool")
+		select {
+		case out <- rec:
+			// consumer is now owner
+		case <-ctx.Done():
+			rec.Release()
+			return
+		}
 	}
+	if err := br.Err(); err != nil {
+		log.Error().Err(err).Msg("batch reader")
+	}
+	log.Debug().Int64("rows", rows).Msg("stream complete")
+}
 
-	stmt, err := db.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, errors.Wrapf(err, errors.CodeQueryFailed, "failed to prepare statement: %s", query)
+// truncate shortens long SQL strings for logs.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return stmt, nil
+	return s[:max] + "…"
 }
