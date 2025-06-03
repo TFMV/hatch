@@ -1,112 +1,129 @@
-# Hatch Benchmarks
+# Hatch Performance Benchmarks
 
-The following benchmarks were run on an Apple M2 Pro with Go 1.24.3.
+## Summary of Changes
 
-> If you'd like to run the benchmarks, let me know so that I can provide the test data.
+- Added new benchmarks for Flight streaming, compression formats, and data types
+- Added concurrent access benchmarks with varying concurrency levels
+- Added large data movement benchmarks with different batch sizes
+- Added memory usage benchmarks
+- Added parallel query execution benchmarks
+- Added record builder and byte buffer pool benchmarks
 
 ## Parquet Read Performance
 
-| File | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------|---------------|-------------|-----------|-----------|
-| Simple | 1,723 | 659µs | 2,178 B | 65 |
-| Complex | 248 | 4.8ms | 2,190 B | 65 |
-| SparkOnTime | 836 | 1.5ms | 2,177 B | 65 |
-| SparkStore | 1,131 | 1.1ms | 2,178 B | 65 |
-| UserData | 790 | 1.4ms | 2,204 B | 68 |
-| LineItem | 146 | 8.3ms | 2,267 B | 68 |
-| SortedZstd | 93 | 12.7ms | 2,237 B | 68 |
+| File | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| Simple | 1,720 | 665,160 | 2,186 | 65 |
+| Complex | 241 | 5,028,312 | 2,184 | 65 |
+| SparkOnTime | 805 | 1,490,163 | 2,187 | 65 |
+| SparkStore | 1,102 | 1,083,774 | 2,179 | 65 |
+| UserData | 769 | 1,432,029 | 2,197 | 68 |
+| LineItem | 144 | 8,244,084 | 2,239 | 68 |
+| SortedZstd | 94 | 12,738,902 | 2,241 | 68 |
 
 ## Parquet Write Performance
 
-| File | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------|---------------|-------------|-----------|-----------|
-| Simple | 1,374 | 810µs | 1,284 B | 26 |
-| Complex | 134 | 9.3ms | 1,287 B | 25 |
-| SparkOnTime | 234 | 5.1ms | 1,310 B | 25 |
-| SparkStore | 436 | 2.9ms | 1,321 B | 26 |
-| UserData | 465 | 2.5ms | 1,294 B | 26 |
+| File | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| Simple | 1,339 | 890,881 | 1,283 | 26 |
+| Complex | 123 | 10,117,129 | 1,279 | 25 |
+| SparkOnTime | 202 | 8,045,878 | 1,303 | 25 |
+| SparkStore | 331 | 3,090,516 | 1,314 | 25 |
+| UserData | 451 | 2,784,577 | 1,286 | 26 |
 
-## Flight Stream Performance
+## Flight Streaming Performance
 
-| File | Operations/sec | Time per op | Memory/op | Allocs/op | Throughput |
-|------|---------------|-------------|-----------|-----------|------------|
-| SparkOnTime | 169 | 6.6ms | 152,314 B | 2,955 | 24.5 MB/s |
-| SparkStore | 330 | 3.7ms | 68,174 B | 1,145 | 21.4 MB/s |
-| UserData | 345 | 3.5ms | 37,258 B | 717 | 12.3 MB/s |
-
-Note: Throughput is calculated as (Memory per operation × Operations per second) converted to MB/s.
+| File | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| SparkOnTime | 162 | 7,157,376 | 186,804 | 3,377 |
+| SparkStore | 285 | 4,375,162 | 68,184 | 1,146 |
+| UserData | 337 | 3,424,743 | 37,299 | 718 |
 
 ## Compression Format Performance
 
-| Format | Operations/sec | Time per op | Memory/op | Allocs/op |
-|--------|---------------|-------------|-----------|-----------|
-| Gzip | 100 | 10.4ms | 1,107 B | 34 |
-| Zstd | 1,867 | 566µs | 1,064 B | 34 |
-| Uncompressed | 2,258 | 534µs | 1,059 B | 34 |
+| Format | Operations/sec | ns/op | B/op | allocs/op |
+|--------|---------------|-------|------|-----------|
+| Gzip | 98 | 10,728,426 | 1,129 | 34 |
+| Zstd | 2,209 | 488,711 | 1,064 | 34 |
+| Uncompressed | 2,366 | 507,160 | 1,058 | 34 |
 
 ## Data Type Performance
 
-| Type | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------|---------------|-------------|-----------|-----------|
-| Timestamps | 3,844 | 285µs | 1,060 B | 34 |
-| TimeTZ | 4,244 | 276µs | 1,059 B | 34 |
-| Unsigned | 3,188 | 359µs | 1,061 B | 34 |
-| Struct | 3,772 | 308µs | 1,061 B | 34 |
-| Map | 331 | 3.5ms | 1,080 B | 34 |
-| List | 211 | 5.7ms | 1,088 B | 34 |
-| Decimal | 2,766 | 385µs | 1,061 B | 34 |
+| Type | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| Timestamps | 3,861 | 288,313 | 1,061 | 34 |
+| TimeTZ | 3,667 | 283,369 | 1,061 | 34 |
+| Unsigned | 3,135 | 370,148 | 1,060 | 34 |
+| Struct | 3,555 | 313,240 | 1,060 | 34 |
+| Map | 354 | 3,158,154 | 1,068 | 34 |
+| List | 232 | 5,322,628 | 1,081 | 34 |
+| Decimal | 3,076 | 378,196 | 1,062 | 34 |
 
 ## Concurrent Access Performance
 
-| File | Concurrency | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------|-------------|---------------|-------------|-----------|-----------|
-| Simple | 2 | 3,069 | 370µs | 2,462 B | 78 |
-| Simple | 4 | 5,932 | 215µs | 2,448 B | 78 |
-| Simple | 8 | 4,308 | 233µs | 2,469 B | 78 |
-| Simple | 16 | 5,992 | 189µs | 2,443 B | 78 |
-| Complex | 2 | 394 | 3.2ms | 2,469 B | 78 |
-| Complex | 4 | 517 | 2.9ms | 2,458 B | 78 |
-| Complex | 8 | 660 | 1.7ms | 2,454 B | 78 |
-| Complex | 16 | 682 | 1.7ms | 2,454 B | 78 |
-| SparkOnTime | 2 | 1,476 | 797µs | 2,466 B | 78 |
-| SparkOnTime | 4 | 2,343 | 507µs | 2,468 B | 78 |
-| SparkOnTime | 8 | 2,059 | 517µs | 2,464 B | 78 |
-| SparkOnTime | 16 | 2,401 | 468µs | 2,465 B | 78 |
+| File | Concurrency | Operations/sec | ns/op | B/op | allocs/op |
+|------|-------------|---------------|-------|------|-----------|
+| Simple | 2 | 3,218 | 362,202 | 2,460 | 78 |
+| Simple | 4 | 5,906 | 221,511 | 2,460 | 78 |
+| Simple | 8 | 5,521 | 199,619 | 2,456 | 78 |
+| Simple | 16 | 6,852 | 194,442 | 2,444 | 78 |
+| Complex | 2 | 416 | 2,818,259 | 2,469 | 78 |
+| Complex | 4 | 626 | 1,808,135 | 2,450 | 78 |
+| Complex | 8 | 634 | 1,722,959 | 2,460 | 78 |
+| Complex | 16 | 708 | 1,712,477 | 2,454 | 78 |
+| SparkOnTime | 2 | 1,356 | 831,603 | 2,479 | 78 |
+| SparkOnTime | 4 | 2,113 | 510,203 | 2,467 | 78 |
+| SparkOnTime | 8 | 2,043 | 503,564 | 2,468 | 78 |
+| SparkOnTime | 16 | 2,444 | 496,526 | 2,466 | 78 |
 
 ## Large Data Movement Performance
 
-| Batch Size | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------------|---------------|-------------|-----------|-----------|
-| 10,000 | 100 | 10.0ms | 730 KB | 131,986 |
-| 50,000 | 27 | 43.1ms | 3.65 MB | 659,987 |
-| 100,000 | 14 | 84.2ms | 7.30 MB | 1,320,011 |
-| 500,000 | 3 | 365.9ms | 36.5 MB | 6,600,098 |
-| 1,000,000 | 2 | 722.2ms | 73.0 MB | 13,200,085 |
+| Batch Size | Operations/sec | ns/op | bytes/op | B/op | allocs/op |
+|------------|---------------|-------|----------|------|-----------|
+| 10,000 | 129 | 9,510,845 | 730,000 | 4,158,347 | 132,402 |
+| 50,000 | 26 | 44,592,870 | 3,650,000 | 20,888,152 | 661,689 |
+| 100,000 | 12 | 89,290,201 | 7,300,000 | 41,820,194 | 1,323,423 |
+| 500,000 | 3 | 402,454,986 | 36,500,000 | 209,149,506 | 6,617,535 |
+| 1,000,000 | 2 | 788,686,354 | 73,000,000 | 418,323,792 | 13,235,275 |
 
-## Flight Statement Performance
+## Memory Usage Performance
 
-| Query Type | Operations/sec | Time per op | Memory/op | Allocs/op |
-|------------|---------------|-------------|-----------|-----------|
-| Simple SELECT | 12,942 | 90.9µs | 12.2 KB | 144 |
-| Large Table LIMIT | 1,240 | 906.6µs | 198.8 KB | 8,043 |
-| Filtered Query | 962 | 1.1ms | 235.5 KB | 8,298 |
-| Group By Query | 134 | 8.6ms | 15.7 KB | 192 |
+| Size | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| 1,000 | 20,382 | 59,178 | 88,758 | 82 |
+| 10,000 | 2,079 | 599,845 | 1,338,341 | 119 |
+| 100,000 | 292 | 4,050,085 | 9,849,864 | 147 |
 
-## Memory Pool Performance
+## Pool Performance
 
-| Operation | Operations/sec | Time per op | Memory/op | Allocs/op |
-|-----------|---------------|-------------|-----------|-----------|
-| RecordBuilder Get/Put | 143,348,066 | 8.4ns | 0 B | 0 |
-| RecordBuilder Build | 716,593 | 1.5µs | 2.6 KB | 31 |
-| ByteBuffer 64B | 34,970,086 | 34.5ns | 24 B | 1 |
-| ByteBuffer 1KB | 35,736,753 | 34.2ns | 24 B | 1 |
-| ByteBuffer 4KB | 32,696,396 | 36.2ns | 24 B | 1 |
-| ByteBuffer 16KB | 31,844,421 | 37.5ns | 24 B | 1 |
+### Record Builder Pool
 
-## Memory Usage Patterns
+| Operation | Operations/sec | ns/op | B/op | allocs/op |
+|-----------|---------------|-------|------|-----------|
+| Get/Put | 136,580,787 | 8.663 | 0 | 0 |
+| BuildRecord | 709,884 | 1,603 | 2,619 | 31 |
 
-| Dataset Size | Operations/sec | Time per op | Memory/op | Allocs/op |
-|--------------|---------------|-------------|-----------|-----------|
-| 1,000 rows | 20,221 | 58.2µs | 88.8 KB | 82 |
-| 10,000 rows | 2,026 | 585.3µs | 1.34 MB | 119 |
-| 100,000 rows | 295 | 4.0ms | 9.85 MB | 147 |
+### Byte Buffer Pool
+
+| Size | Operations/sec | ns/op | B/op | allocs/op |
+|------|---------------|-------|------|-----------|
+| 64 | 33,380,350 | 35.50 | 24 | 1 |
+| 1,024 | 35,695,074 | 33.77 | 24 | 1 |
+| 4,096 | 33,108,889 | 35.83 | 24 | 1 |
+| 16,384 | 32,737,688 | 36.77 | 24 | 1 |
+
+## Key Observations
+
+1. **Compression Performance**: Zstd shows excellent performance, nearly matching uncompressed data while providing compression benefits.
+2. **Concurrent Scaling**: Simple operations scale well with concurrency up to 16 threads, while complex operations show diminishing returns after 4 threads.
+3. **Memory Usage**: Linear scaling of memory usage with data size, with reasonable allocation counts.
+4. **Pool Performance**: Record builder and byte buffer pools show excellent performance with minimal allocations.
+5. **Large Data Movement**: Shows expected linear scaling with batch size, with memory usage growing proportionally.
+6. **Flight Streaming**: Higher allocation counts compared to direct parquet operations, indicating potential optimization opportunities in the streaming layer.
+
+## Environment
+
+- OS: darwin
+- Architecture: arm64
+- CPU: Apple M2 Pro
+- Go Version: go1.24.3

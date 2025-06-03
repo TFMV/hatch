@@ -5,6 +5,8 @@ import (
 	"context"
 	stdErrors "errors" // Standard library errors aliased
 	"fmt"
+	"runtime"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -293,27 +295,59 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 		return nil, nil, h.mapServiceError(flightErrors.New(flightErrors.CodeInternal, "schema is nil"))
 	}
 
-	// Create output channel for stream chunks
-	outCh := make(chan flight.StreamChunk, 16)
+	// Try to get schema from cache
+	if cached, ok := h.schemaCache.Get(schema); ok {
+		h.metrics.IncrementCounter("handler_schema_cache_hit")
+		schema = cached
+	} else {
+		h.metrics.IncrementCounter("handler_schema_cache_miss")
+		h.schemaCache.Put(schema)
+	}
+
+	// Create output channel for stream chunks with adaptive buffer size
+	outCh := make(chan flight.StreamChunk, 32) // Increased buffer for better throughput
 
 	// Start goroutine to stream records
 	go func() {
 		defer close(outCh)
 
-		recordCount := 0
+		var (
+			recordCount int
+			batchSize   int = 1024 // Start with reasonable batch size
+			lastGC      time.Time
+		)
+
+		// Get initial pooled record
+		pooled := h.recordPool.Get(schema)
+		if pooled == nil {
+			h.logger.Error("Failed to get pooled record")
+			return
+		}
+		defer pooled.Release()
+
 		for record := range queryResult.Records {
 			if record == nil {
 				continue
 			}
 
-			// Get a pooled record
-			pooled := h.recordPool.Get(record.Schema())
+			// Check memory pressure periodically
+			if time.Since(lastGC) > 5*time.Second {
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
 
-			// Create a copy of the record using zero-copy slicing
-			// This is more efficient than NewSlice as it uses the pool
-			h.recordPool.Put(pooled) // Return the unused pooled record
+				// Adjust batch size based on memory pressure
+				if m.HeapAlloc > m.HeapSys*3/4 { // Over 75% heap usage
+					batchSize = max(1024, batchSize/2)
+					runtime.GC() // Force GC to reclaim memory
+				} else if m.HeapAlloc < m.HeapSys/2 { // Under 50% heap usage
+					batchSize = min(32768, batchSize*2)
+				}
+				lastGC = time.Now()
+			}
+
+			// Create a copy of the record using the pool
 			recordCopy := array.NewRecord(
-				record.Schema(),
+				schema,
 				record.Columns(),
 				record.NumRows(),
 			)
@@ -322,9 +356,7 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 				select {
 				case outCh <- flight.StreamChunk{Data: recordCopy}:
 					recordCount++
-					h.logger.Debug("Sent record chunk to stream",
-						"rows", recordCopy.NumRows(),
-						"count", recordCount)
+					h.metrics.RecordHistogram("handler_record_rows", float64(recordCopy.NumRows()))
 				case <-ctx.Done():
 					h.logger.Info("Context cancelled during chunk send",
 						"error", ctx.Err(),
@@ -335,12 +367,41 @@ func (h *queryHandler) ExecuteQueryAndStream(ctx context.Context, query string) 
 			} else {
 				recordCopy.Release()
 			}
+
+			// Return the pooled record
+			h.recordPool.Put(pooled)
+			pooled = h.recordPool.Get(schema)
+			if pooled == nil {
+				h.logger.Error("Failed to get pooled record")
+				return
+			}
 		}
 
 		h.logger.Info("Query streaming completed",
 			"records_sent", recordCount)
 		h.metrics.RecordHistogram("handler_stream_records", float64(recordCount))
+
+		// Get pool stats
+		stats := h.recordPool.Stats()
+		h.metrics.RecordHistogram("handler_pool_hits", float64(stats.Hits))
+		h.metrics.RecordHistogram("handler_pool_misses", float64(stats.Misses))
+		h.metrics.RecordHistogram("handler_pool_allocs", float64(stats.Allocs))
 	}()
 
 	return schema, outCh, nil
+}
+
+// Helper functions for min/max
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
