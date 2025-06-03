@@ -103,6 +103,9 @@ func (p *RecordBuilderPool) Put(rb *array.RecordBuilder) {
 
 // nextPowerOfTwo returns the next power of 2 >= n
 func nextPowerOfTwo(n int) int {
+	if n == 0 {
+		return 1
+	}
 	n--
 	n |= n >> 1
 	n |= n >> 2
