@@ -1446,3 +1446,7 @@ type middlewareTimerAdapter struct {
 func (t *middlewareTimerAdapter) Stop() float64 {
 	return t.timer.Stop()
 }
+
+func (s *FlightSQLServer) QueryHandler() handlers.QueryHandler {
+	return s.queryHandler
+}

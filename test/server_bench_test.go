@@ -18,20 +18,8 @@ import (
 	"github.com/TFMV/hatch/pkg/infrastructure/pool"
 )
 
-// noopMetrics is a no-op implementation of server.MetricsCollector for benchmarks
-type noopMetrics struct{}
-
-func (n *noopMetrics) IncrementCounter(name string, labels ...string)               {}
-func (n *noopMetrics) RecordHistogram(name string, value float64, labels ...string) {}
-func (n *noopMetrics) RecordGauge(name string, value float64, labels ...string)     {}
-func (n *noopMetrics) StartTimer(name string) server.Timer                          { return &noopTimer{} }
-
-type noopTimer struct{}
-
-func (n *noopTimer) Stop() float64 { return 0 }
-
 // setupBenchmarkServer creates a new server instance for benchmarking
-func setupBenchmarkServer(b *testing.B) *server.FlightSQLServer {
+func setupBenchmarkFlightServer(b *testing.B) *server.FlightSQLServer {
 	cfg := &config.Config{
 		Database:          ":memory:",
 		ConnectionTimeout: 30 * time.Second,
@@ -118,7 +106,7 @@ func setupTestTables(b *testing.B, srv *server.FlightSQLServer) {
 
 // BenchmarkGetFlightInfoStatement benchmarks the GetFlightInfoStatement method
 func BenchmarkGetFlightInfoStatement(b *testing.B) {
-	srv := setupBenchmarkServer(b)
+	srv := setupBenchmarkFlightServer(b)
 	defer srv.Close(context.Background())
 
 	// Setup test tables
@@ -151,7 +139,7 @@ func BenchmarkGetFlightInfoStatement(b *testing.B) {
 
 // BenchmarkDoGetStatement benchmarks the DoGetStatement method
 func BenchmarkDoGetStatement(b *testing.B) {
-	srv := setupBenchmarkServer(b)
+	srv := setupBenchmarkFlightServer(b)
 	defer srv.Close(context.Background())
 
 	ctx := context.Background()
@@ -235,7 +223,7 @@ func BenchmarkByteBufferPool(b *testing.B) {
 
 // BenchmarkParallelQueryExecution benchmarks parallel query execution
 func BenchmarkParallelQueryExecution(b *testing.B) {
-	srv := setupBenchmarkServer(b)
+	srv := setupBenchmarkFlightServer(b)
 	defer srv.Close(context.Background())
 
 	ctx := context.Background()
@@ -261,7 +249,7 @@ func BenchmarkParallelQueryExecution(b *testing.B) {
 
 // BenchmarkMemoryUsage benchmarks memory usage patterns
 func BenchmarkMemoryUsage(b *testing.B) {
-	srv := setupBenchmarkServer(b)
+	srv := setupBenchmarkFlightServer(b)
 	defer srv.Close(context.Background())
 
 	sizes := []int{1000, 10000, 100000}

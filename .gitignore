@@ -28,3 +28,4 @@ go.work
 gocheck_artifacts/
 Dockerfile
 .dockerignore
+data/
