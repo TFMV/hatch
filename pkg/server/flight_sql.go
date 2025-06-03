@@ -1,11 +1,10 @@
+// Package server wires the Flight SQL handlers to gRPC.
 package server
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -20,180 +19,206 @@ import (
 	"github.com/TFMV/flight/pkg/infrastructure/pool"
 )
 
-// FlightSQLServer implements the Flight SQL protocol
+//───────────────────────────────────
+// FlightSQLServer
+//───────────────────────────────────
+
+// FlightSQLServer implements the Flight SQL protocol.
 type FlightSQLServer struct {
 	flight.BaseFlightServer
+
 	queryHandler             handlers.QueryHandler
 	metadataHandler          handlers.MetadataHandler
 	transactionHandler       handlers.TransactionHandler
 	preparedStatementHandler handlers.PreparedStatementHandler
-	pool                     pool.ConnectionPool
-	converter                converter.TypeConverter
-	allocator                memory.Allocator
-	cache                    cache.Cache
-	cacheKeyGen              cache.CacheKeyGenerator
-	metrics                  metrics.Collector
-	logger                   zerolog.Logger
+
+	pool      pool.ConnectionPool
+	converter converter.TypeConverter
+	alloc     memory.Allocator
+	cache     cache.Cache
+	keyGen    cache.CacheKeyGenerator
+	metrics   metrics.Collector
+	log       zerolog.Logger
 }
 
-// NewFlightSQLServer creates a new Flight SQL server
+// NewFlightSQLServer wires up all dependencies.
 func NewFlightSQLServer(
-	queryHandler handlers.QueryHandler,
-	metadataHandler handlers.MetadataHandler,
-	transactionHandler handlers.TransactionHandler,
-	preparedStatementHandler handlers.PreparedStatementHandler,
-	pool pool.ConnectionPool,
-	converter converter.TypeConverter,
-	allocator memory.Allocator,
-	cache cache.Cache,
-	cacheKeyGen cache.CacheKeyGenerator,
-	metrics metrics.Collector,
-	logger zerolog.Logger,
+	qh handlers.QueryHandler,
+	mh handlers.MetadataHandler,
+	th handlers.TransactionHandler,
+	ph handlers.PreparedStatementHandler,
+	p pool.ConnectionPool,
+	conv converter.TypeConverter,
+	alloc memory.Allocator,
+	c cache.Cache,
+	kg cache.CacheKeyGenerator,
+	m metrics.Collector,
+	lg zerolog.Logger,
 ) *FlightSQLServer {
 	return &FlightSQLServer{
-		queryHandler:             queryHandler,
-		metadataHandler:          metadataHandler,
-		transactionHandler:       transactionHandler,
-		preparedStatementHandler: preparedStatementHandler,
-		pool:                     pool,
-		converter:                converter,
-		allocator:                allocator,
-		cache:                    cache,
-		cacheKeyGen:              cacheKeyGen,
-		metrics:                  metrics,
-		logger:                   logger,
+		queryHandler:             qh,
+		metadataHandler:          mh,
+		transactionHandler:       th,
+		preparedStatementHandler: ph,
+
+		pool:      p,
+		converter: conv,
+		alloc:     alloc,
+		cache:     c,
+		keyGen:    kg,
+		metrics:   m,
+		log:       lg.With().Str("component", "server").Logger(),
 	}
 }
 
-// GetFlightInfoStatement handles statement execution requests.
-func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flightsql.StatementQuery) (*flight.FlightInfo, error) {
-	// Generate cache key
-	cacheKey := s.cacheKeyGen.GenerateKey(cmd.GetQuery(), nil)
+//───────────────────────────────────
+// Query helpers
+//───────────────────────────────────
 
-	// Check cache first
-	if cached, err := s.cache.Get(ctx, cacheKey); err == nil && cached != nil {
-		desc := &flight.FlightDescriptor{
-			Type: flight.DescriptorCMD,
-			Cmd:  []byte(cmd.GetQuery()),
-		}
-		return &flight.FlightInfo{
-			Schema:           flight.SerializeSchema(cached.Schema(), s.allocator),
-			FlightDescriptor: desc,
-		}, nil
+// infoFromSchema creates a FlightInfo from a query and schema.
+func (s *FlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *flight.FlightInfo {
+	desc := &flight.FlightDescriptor{
+		Type: flight.DescriptorCMD,
+		Cmd:  []byte(query),
 	}
-
-	// Execute query
-	info, err := s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
-	if err != nil {
-		return nil, err
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.alloc),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
 	}
-
-	return info, nil
 }
 
-// DoGetStatement handles statement execution and result streaming.
-func (s *FlightSQLServer) DoGetStatement(ctx context.Context, cmd flightsql.StatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	cacheKey := s.cacheKeyGen.GenerateKey(cmd.GetQuery(), nil)
+// infoStatic creates a FlightInfo for static metadata endpoints.
+func (s *FlightSQLServer) infoStatic(desc *flight.FlightDescriptor, schema *arrow.Schema) *flight.FlightInfo {
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.alloc),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: desc.Cmd},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}
+}
 
-	if cached, err := s.cache.Get(ctx, cacheKey); err == nil && cached != nil {
-		chunks := make(chan flight.StreamChunk, 1)
-		chunks <- flight.StreamChunk{
-			Data: cached,
-			Desc: nil,
-		}
-		close(chunks)
-		return cached.Schema(), chunks, nil
+// GetFlightInfoStatement handles "planning" a query.
+func (s *FlightSQLServer) GetFlightInfoStatement(
+	ctx context.Context,
+	cmd flightsql.StatementQuery,
+) (*flight.FlightInfo, error) {
+	key := s.keyGen.GenerateKey(cmd.GetQuery(), nil)
+
+	if rec, _ := s.cache.Get(ctx, key); rec != nil {
+		return s.infoFromSchema(cmd.GetQuery(), rec.Schema()), nil
 	}
 
-	schema, chunks, err := s.queryHandler.ExecuteStatement(ctx, cmd.GetQuery(), "")
+	return s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
+}
+
+// DoGetStatement streams the query results, with a fast path to the cache.
+func (s *FlightSQLServer) DoGetStatement(
+	ctx context.Context,
+	cmd flightsql.StatementQuery,
+) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	key := s.keyGen.GenerateKey(cmd.GetQuery(), nil)
+
+	// ── cache hit ───────────────────────────────────────────────
+	if rec, _ := s.cache.Get(ctx, key); rec != nil {
+		ch := make(chan flight.StreamChunk, 1)
+		ch <- flight.StreamChunk{Data: rec}
+		close(ch)
+		return rec.Schema(), ch, nil
+	}
+
+	// ── cache miss: ask handler ─────────────────────────────────
+	schema, upstream, err := s.queryHandler.ExecuteStatement(ctx, cmd.GetQuery(), "")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Read the first chunk to cache it, then re-stream all chunks
-	out := make(chan flight.StreamChunk, 16)
+	down := make(chan flight.StreamChunk, 16)
+
 	go func() {
-		defer close(out)
+		defer close(down)
 		first := true
-		for chunk := range chunks {
-			if first {
-				if err := s.cache.Put(ctx, cacheKey, chunk.Data); err != nil {
-					fmt.Printf("Failed to cache query result: %v\n", err)
-				}
+		for c := range upstream {
+			if first && c.Data != nil {
+				_ = s.cache.Put(ctx, key, c.Data)
 				first = false
 			}
-			out <- chunk
+			down <- c
 		}
 	}()
 
-	return schema, out, nil
+	return schema, down, nil
 }
 
-// DoPutCommandStatementUpdate handles Flight SQL update statement execution
+//───────────────────────────────────
+// Update
+//───────────────────────────────────
+
 func (s *FlightSQLServer) DoPutCommandStatementUpdate(
 	ctx context.Context,
-	request flightsql.StatementUpdate,
+	req flightsql.StatementUpdate,
 ) (int64, error) {
-	// Execute the update using the query handler
-	rowsAffected, err := s.queryHandler.ExecuteUpdate(ctx, request.GetQuery(), string(request.GetTransactionId()))
+	affected, err := s.queryHandler.ExecuteUpdate(ctx, req.GetQuery(), string(req.GetTransactionId()))
 	if err != nil {
-		return 0, status.Error(codes.InvalidArgument, fmt.Sprintf("failed to execute update: %v", err))
+		return 0, status.Errorf(codes.InvalidArgument, "execute update: %v", err)
 	}
-
-	return rowsAffected, nil
+	return affected, nil
 }
 
-// GetFlightInfoCatalogs handles catalog metadata requests
+//───────────────────────────────────
+// Metadata helpers
+//───────────────────────────────────
+
+func (s *FlightSQLServer) infoFromHandler(
+	ctx context.Context,
+	desc *flight.FlightDescriptor,
+	get func() (*arrow.Schema, <-chan flight.StreamChunk, error),
+) (*flight.FlightInfo, error) {
+	schema, _, err := get()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return s.infoStatic(desc, schema), nil
+}
+
+//───────────────────────────────────
+// Metadata endpoints
+//───────────────────────────────────
+
 func (s *FlightSQLServer) GetFlightInfoCatalogs(
 	ctx context.Context,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
 	schema, _, err := s.metadataHandler.GetCatalogs(ctx)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get catalogs: %v", err))
+		return nil, status.Errorf(codes.Internal, "catalogs: %v", err)
 	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoStatic(desc, schema), nil
 }
 
-// DoGetCatalogs handles catalog metadata streaming
 func (s *FlightSQLServer) DoGetCatalogs(
 	ctx context.Context,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadataHandler.GetCatalogs(ctx)
 }
 
-// GetFlightInfoSchemas handles schema metadata requests
 func (s *FlightSQLServer) GetFlightInfoSchemas(
 	ctx context.Context,
 	cmd flightsql.GetDBSchemas,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetSchemas(ctx, cmd.GetCatalog(), cmd.GetDBSchemaFilterPattern())
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get schemas: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetSchemas(ctx, cmd.GetCatalog(), cmd.GetDBSchemaFilterPattern())
+	})
 }
 
-// DoGetDBSchemas handles schema metadata streaming
 func (s *FlightSQLServer) DoGetDBSchemas(
 	ctx context.Context,
 	cmd flightsql.GetDBSchemas,
@@ -201,36 +226,23 @@ func (s *FlightSQLServer) DoGetDBSchemas(
 	return s.metadataHandler.GetSchemas(ctx, cmd.GetCatalog(), cmd.GetDBSchemaFilterPattern())
 }
 
-// GetFlightInfoTables handles table metadata requests
 func (s *FlightSQLServer) GetFlightInfoTables(
 	ctx context.Context,
 	cmd flightsql.GetTables,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetTables(
-		ctx,
-		cmd.GetCatalog(),
-		cmd.GetDBSchemaFilterPattern(),
-		cmd.GetTableNameFilterPattern(),
-		cmd.GetTableTypes(),
-		cmd.GetIncludeSchema(),
-	)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get tables: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetTables(
+			ctx,
+			cmd.GetCatalog(),
+			cmd.GetDBSchemaFilterPattern(),
+			cmd.GetTableNameFilterPattern(),
+			cmd.GetTableTypes(),
+			cmd.GetIncludeSchema(),
+		)
+	})
 }
 
-// DoGetTables handles table metadata streaming
 func (s *FlightSQLServer) DoGetTables(
 	ctx context.Context,
 	cmd flightsql.GetTables,
@@ -245,57 +257,31 @@ func (s *FlightSQLServer) DoGetTables(
 	)
 }
 
-// GetFlightInfoTableTypes handles table type metadata requests
 func (s *FlightSQLServer) GetFlightInfoTableTypes(
 	ctx context.Context,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetTableTypes(ctx)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get table types: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetTableTypes(ctx)
+	})
 }
 
-// DoGetTableTypes handles table type metadata streaming
 func (s *FlightSQLServer) DoGetTableTypes(
 	ctx context.Context,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadataHandler.GetTableTypes(ctx)
 }
 
-// GetFlightInfoPrimaryKeys handles primary key metadata requests
 func (s *FlightSQLServer) GetFlightInfoPrimaryKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetPrimaryKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get primary keys: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetPrimaryKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
+	})
 }
 
-// DoGetPrimaryKeys handles primary key metadata streaming
 func (s *FlightSQLServer) DoGetPrimaryKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
@@ -303,29 +289,16 @@ func (s *FlightSQLServer) DoGetPrimaryKeys(
 	return s.metadataHandler.GetPrimaryKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
 }
 
-// GetFlightInfoImportedKeys handles imported key metadata requests
 func (s *FlightSQLServer) GetFlightInfoImportedKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetImportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get imported keys: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetImportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
+	})
 }
 
-// DoGetImportedKeys handles imported key metadata streaming
 func (s *FlightSQLServer) DoGetImportedKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
@@ -333,29 +306,16 @@ func (s *FlightSQLServer) DoGetImportedKeys(
 	return s.metadataHandler.GetImportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
 }
 
-// GetFlightInfoExportedKeys handles exported key metadata requests
 func (s *FlightSQLServer) GetFlightInfoExportedKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetExportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get exported keys: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetExportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
+	})
 }
 
-// DoGetExportedKeys handles exported key metadata streaming
 func (s *FlightSQLServer) DoGetExportedKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
@@ -363,29 +323,16 @@ func (s *FlightSQLServer) DoGetExportedKeys(
 	return s.metadataHandler.GetExportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
 }
 
-// GetFlightInfoXdbcTypeInfo handles XDBC type info metadata requests
 func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(
 	ctx context.Context,
 	cmd flightsql.GetXdbcTypeInfo,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetXdbcTypeInfo(ctx, cmd.GetDataType())
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get XDBC type info: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetXdbcTypeInfo(ctx, cmd.GetDataType())
+	})
 }
 
-// DoGetXdbcTypeInfo handles XDBC type info metadata streaming
 func (s *FlightSQLServer) DoGetXdbcTypeInfo(
 	ctx context.Context,
 	cmd flightsql.GetXdbcTypeInfo,
@@ -393,29 +340,16 @@ func (s *FlightSQLServer) DoGetXdbcTypeInfo(
 	return s.metadataHandler.GetXdbcTypeInfo(ctx, cmd.GetDataType())
 }
 
-// GetFlightInfoSqlInfo handles SQL info metadata requests
 func (s *FlightSQLServer) GetFlightInfoSqlInfo(
 	ctx context.Context,
 	cmd flightsql.GetSqlInfo,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	schema, _, err := s.metadataHandler.GetSqlInfo(ctx, cmd.GetInfo())
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get SQL info: %v", err))
-	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetSqlInfo(ctx, cmd.GetInfo())
+	})
 }
 
-// DoGetSqlInfo handles SQL info metadata streaming
 func (s *FlightSQLServer) DoGetSqlInfo(
 	ctx context.Context,
 	cmd flightsql.GetSqlInfo,
@@ -423,67 +357,67 @@ func (s *FlightSQLServer) DoGetSqlInfo(
 	return s.metadataHandler.GetSqlInfo(ctx, cmd.GetInfo())
 }
 
-// BeginTransaction handles transaction start requests
+//───────────────────────────────────
+// Transactions
+//───────────────────────────────────
+
 func (s *FlightSQLServer) BeginTransaction(
 	ctx context.Context,
-	request flightsql.ActionBeginTransactionRequest,
+	req flightsql.ActionBeginTransactionRequest,
 ) ([]byte, error) {
-	txID, err := s.transactionHandler.Begin(ctx, false)
+	id, err := s.transactionHandler.Begin(ctx, false)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to begin transaction: %v", err))
+		return nil, status.Errorf(codes.Internal, "begin tx: %v", err)
 	}
-	return []byte(txID), nil
+	return []byte(id), nil
 }
 
-// EndTransaction handles transaction end requests
 func (s *FlightSQLServer) EndTransaction(
 	ctx context.Context,
-	request flightsql.ActionEndTransactionRequest,
+	req flightsql.ActionEndTransactionRequest,
 ) error {
-	txID := string(request.GetTransactionId())
-	if request.GetAction() == flightsql.EndTransactionCommit {
-		err := s.transactionHandler.Commit(ctx, txID)
-		if err != nil {
-			return status.Error(codes.Internal, fmt.Sprintf("failed to commit transaction: %v", err))
-		}
-	} else {
-		err := s.transactionHandler.Rollback(ctx, txID)
-		if err != nil {
-			return status.Error(codes.Internal, fmt.Sprintf("failed to rollback transaction: %v", err))
-		}
+	id := string(req.GetTransactionId())
+	var err error
+	switch req.GetAction() {
+	case flightsql.EndTransactionCommit:
+		err = s.transactionHandler.Commit(ctx, id)
+	default:
+		err = s.transactionHandler.Rollback(ctx, id)
+	}
+	if err != nil {
+		return status.Errorf(codes.Internal, "end tx: %v", err)
 	}
 	return nil
 }
 
-// CreatePreparedStatement handles prepared statement creation requests
+//───────────────────────────────────
+// Prepared statements
+//───────────────────────────────────
+
 func (s *FlightSQLServer) CreatePreparedStatement(
 	ctx context.Context,
-	request flightsql.ActionCreatePreparedStatementRequest,
+	req flightsql.ActionCreatePreparedStatementRequest,
 ) (flightsql.ActionCreatePreparedStatementResult, error) {
-	handle, schema, err := s.preparedStatementHandler.Create(ctx, request.GetQuery(), string(request.GetTransactionId()))
+	h, sch, err := s.preparedStatementHandler.Create(ctx, req.GetQuery(), string(req.GetTransactionId()))
 	if err != nil {
-		return flightsql.ActionCreatePreparedStatementResult{}, status.Error(codes.Internal, fmt.Sprintf("failed to create prepared statement: %v", err))
+		return flightsql.ActionCreatePreparedStatementResult{}, status.Errorf(codes.Internal, "create ps: %v", err)
 	}
-
 	return flightsql.ActionCreatePreparedStatementResult{
-		Handle:        []byte(handle),
-		DatasetSchema: schema,
+		Handle:        []byte(h),
+		DatasetSchema: sch,
 	}, nil
 }
 
-// ClosePreparedStatement handles prepared statement cleanup requests
 func (s *FlightSQLServer) ClosePreparedStatement(
 	ctx context.Context,
-	request flightsql.ActionClosePreparedStatementRequest,
+	req flightsql.ActionClosePreparedStatementRequest,
 ) error {
-	err := s.preparedStatementHandler.Close(ctx, string(request.GetPreparedStatementHandle()))
-	if err != nil {
-		return status.Error(codes.Internal, fmt.Sprintf("failed to close prepared statement: %v", err))
+	if err := s.preparedStatementHandler.Close(ctx, string(req.GetPreparedStatementHandle())); err != nil {
+		return status.Errorf(codes.Internal, "close ps: %v", err)
 	}
 	return nil
 }
 
-// GetFlightInfoPreparedStatement handles prepared statement execution requests
 func (s *FlightSQLServer) GetFlightInfoPreparedStatement(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementQuery,
@@ -491,99 +425,49 @@ func (s *FlightSQLServer) GetFlightInfoPreparedStatement(
 ) (*flight.FlightInfo, error) {
 	schema, err := s.preparedStatementHandler.GetSchema(ctx, string(cmd.GetPreparedStatementHandle()))
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get prepared statement schema: %v", err))
+		return nil, status.Errorf(codes.Internal, "get ps schema: %v", err)
 	}
-
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: desc.Cmd},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	return s.infoStatic(desc, schema), nil
 }
 
-// DoGetPreparedStatement handles prepared statement execution and streaming
 func (s *FlightSQLServer) DoGetPreparedStatement(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementQuery,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	// Get the parameter schema
-	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, string(cmd.GetPreparedStatementHandle()))
-	if err != nil {
-		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
-	}
-
-	// Create an empty record for parameters if none were provided
-	record := array.NewRecord(paramSchema, nil, 0)
-	defer record.Release()
-
-	return s.preparedStatementHandler.ExecuteQuery(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	return s.preparedStatementHandler.ExecuteQuery(ctx, string(cmd.GetPreparedStatementHandle()), nil)
 }
 
-// DoPutPreparedStatementQuery handles prepared statement parameter binding
 func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementQuery,
 	reader flight.MessageReader,
 ) error {
-	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
-	defer timer.Stop()
-
-	s.logger.Debug().Str("handle", string(cmd.GetPreparedStatementHandle())).Msg("DoPutPreparedStatementQuery")
-
-	// Read the parameter record batch
 	record, err := reader.Read()
 	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
-		return status.Error(codes.Internal, fmt.Sprintf("failed to read parameter record: %v", err))
+		return status.Errorf(codes.Internal, "read params: %v", err)
 	}
 	defer record.Release()
 
-	// Get the parameter schema
-	paramSchema, err := s.preparedStatementHandler.GetParameterSchema(ctx, string(cmd.GetPreparedStatementHandle()))
-	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
-		return status.Error(codes.Internal, fmt.Sprintf("failed to get parameter schema: %v", err))
+	if err := s.preparedStatementHandler.SetParameters(ctx, string(cmd.GetPreparedStatementHandle()), record); err != nil {
+		return status.Errorf(codes.Internal, "set ps params: %v", err)
 	}
-
-	// Validate parameter schema matches
-	if !record.Schema().Equal(paramSchema) {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
-		return status.Error(codes.InvalidArgument, "parameter schema mismatch")
-	}
-
-	// Execute the prepared statement with parameters
-	_, _, err = s.preparedStatementHandler.ExecuteQuery(ctx, string(cmd.GetPreparedStatementHandle()), record)
-	if err != nil {
-		s.metrics.IncrementCounter("flight_errors", "method", "DoPutPreparedStatementQuery")
-		return status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared statement: %v", err))
-	}
-
-	s.metrics.IncrementCounter("flight_prepared_statements_executed")
 	return nil
 }
 
-// DoPutPreparedStatementUpdate handles prepared statement update execution
 func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementUpdate,
 	reader flight.MessageReader,
 ) (int64, error) {
-	// Read the parameter record batch
 	record, err := reader.Read()
 	if err != nil {
-		return 0, status.Error(codes.Internal, fmt.Sprintf("failed to read parameter record: %v", err))
+		return 0, status.Errorf(codes.Internal, "read params: %v", err)
 	}
 	defer record.Release()
 
-	// Execute the prepared update
-	rowsAffected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	affected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), record)
 	if err != nil {
-		return 0, status.Error(codes.Internal, fmt.Sprintf("failed to execute prepared update: %v", err))
+		return 0, status.Errorf(codes.Internal, "execute ps update: %v", err)
 	}
-
-	return rowsAffected, nil
+	return affected, nil
 }
