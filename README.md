@@ -91,33 +91,124 @@ for rdr.Next() { fmt.Println(rdr.Record()) }
 
 ---
 
+## 🛡️ JDBC Connectivity and Authentication
+
+Hatch supports JDBC connectivity through Arrow Flight SQL JDBC driver. You can connect to Hatch using the following JDBC URL format:
+
+```bash
+jdbc:arrow-flight-sql://localhost:32010
+```
+
+#### Authentication
+
+Hatch supports multiple authentication methods that can be configured in your `config.yaml`:
+
+1. **Basic Authentication**:
+
+```yaml
+auth:
+  enabled: true
+  type: basic
+  basic_auth:
+    users:
+      admin:
+        password: "your-secure-password"
+        roles: ["admin"]
+```
+
+JDBC URL: `jdbc:arrow-flight-sql://localhost:32010?username=admin&password=your-secure-password`
+
+2. **Bearer Token**:
+
+```yaml
+auth:
+  enabled: true
+  type: bearer
+  bearer_auth:
+    tokens:
+      "your-secure-token": "admin"
+```
+
+JDBC URL: `jdbc:arrow-flight-sql://localhost:32010?token=your-secure-token`
+
+3. **JWT Authentication**:
+
+```yaml
+auth:
+  enabled: true
+  type: jwt
+  jwt_auth:
+    secret: "your-jwt-secret"
+    issuer: "hatch"
+    audience: "flight-sql-clients"
+```
+
+JDBC URL: `jdbc:arrow-flight-sql://localhost:32010?token=your-jwt-token`
+
+4. **OAuth2**:
+
+```yaml
+auth:
+  enabled: true
+  type: oauth2
+  oauth2_auth:
+    client_id: "your-client-id"
+    client_secret: "your-client-secret"
+    authorize_endpoint: "http://localhost:8080/oauth2/authorize"
+    token_endpoint: "http://localhost:8080/oauth2/token"
+    redirect_url: "http://localhost:8080"
+```
+
+JDBC URL: `jdbc:arrow-flight-sql://localhost:32010?useOAuth2=true&clientId=your-client-id&clientSecret=your-client-secret`
+
+For secure production deployments, it's recommended to:
+
+- Use TLS by configuring the `tls` section in your config
+- Use strong passwords and tokens
+- Regularly rotate credentials
+- Implement proper role-based access control
+
+---
+
 ## 🛠️ Configuration
 
 Create a file `config.yaml` (all fields optional):
 
 ```yaml
 server:
-  address: 0.0.0.0:32010
-  max_connections: 100
-  tls:
-    cert_file: certs/server.pem
-    key_file:  certs/server-key.pem
+  address: "0.0.0.0:32010"
+  max_connections: 10
 
 database:
-  dsn: duckdb://:memory:
+  dsn: "duckdb://:memory:"
   max_open_conns: 32
-  health_check_period: 30s
+  health_check_period: "30s"
 
 logging:
-  level: info   # debug|info|warn|error
-  format: json  # json|console
+  level: "info"
+  format: "json"
 
 metrics:
   enabled: true
-  endpoint: :9090
+  endpoint: ":9090"
 
 tracing:
   enabled: false
+
+auth:
+  enabled: true
+  type: oauth2
+  oauth2_auth:
+    client_id: "your-client-id"
+    client_secret: "your-client-secret"
+    redirect_url: "localhost:8080" # OAuth2 HTTP server address
+    authorize_endpoint: "/oauth2/authorize"
+    token_endpoint: "/oauth2/token"
+    scopes: ["read", "write"]
+    access_token_ttl: 1h
+    refresh_token_ttl: 24h
+    allowed_grant_types:
+      ["authorization_code", "refresh_token", "client_credentials"]
 ```
 
 Then:

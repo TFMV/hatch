@@ -61,7 +61,7 @@ type TLSConfig struct {
 // AuthConfig represents authentication configuration.
 type AuthConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Type    string `yaml:"type" json:"type"` // basic, bearer, mtls
+	Type    string `yaml:"type" json:"type"` // basic, bearer, mtls, oauth2
 
 	// Basic auth
 	BasicAuth BasicAuthConfig `yaml:"basic_auth" json:"basic_auth"`
@@ -71,6 +71,9 @@ type AuthConfig struct {
 
 	// JWT auth
 	JWTAuth JWTAuthConfig `yaml:"jwt_auth" json:"jwt_auth"`
+
+	// OAuth2 auth
+	OAuth2Auth OAuth2Config `yaml:"oauth2_auth" json:"oauth2_auth"`
 }
 
 // BasicAuthConfig represents basic authentication configuration.
@@ -96,6 +99,19 @@ type JWTAuthConfig struct {
 	Secret   string `yaml:"secret" json:"secret"`
 	Issuer   string `yaml:"issuer" json:"issuer"`
 	Audience string `yaml:"audience" json:"audience"`
+}
+
+// OAuth2Config represents OAuth2 authentication configuration.
+type OAuth2Config struct {
+	ClientID          string        `yaml:"client_id" json:"client_id"`
+	ClientSecret      string        `yaml:"client_secret" json:"client_secret"`
+	AuthorizeEndpoint string        `yaml:"authorize_endpoint" json:"authorize_endpoint"`
+	TokenEndpoint     string        `yaml:"token_endpoint" json:"token_endpoint"`
+	RedirectURL       string        `yaml:"redirect_url" json:"redirect_url"`
+	Scopes            []string      `yaml:"scopes" json:"scopes"`
+	AccessTokenTTL    time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
+	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
+	AllowedGrantTypes []string      `yaml:"allowed_grant_types" json:"allowed_grant_types"`
 }
 
 // MetricsConfig represents metrics configuration.
@@ -192,6 +208,22 @@ func (c *Config) Validate() error {
 		case "jwt":
 			if c.Auth.JWTAuth.Secret == "" {
 				return fmt.Errorf("JWT auth requires secret")
+			}
+		case "oauth2":
+			if c.Auth.OAuth2Auth.ClientID == "" || c.Auth.OAuth2Auth.ClientSecret == "" {
+				return fmt.Errorf("OAuth2 auth requires client ID and secret")
+			}
+			if c.Auth.OAuth2Auth.AuthorizeEndpoint == "" || c.Auth.OAuth2Auth.TokenEndpoint == "" {
+				return fmt.Errorf("OAuth2 auth requires authorize and token endpoints")
+			}
+			if c.Auth.OAuth2Auth.AccessTokenTTL <= 0 {
+				c.Auth.OAuth2Auth.AccessTokenTTL = 1 * time.Hour
+			}
+			if c.Auth.OAuth2Auth.RefreshTokenTTL <= 0 {
+				c.Auth.OAuth2Auth.RefreshTokenTTL = 24 * time.Hour
+			}
+			if len(c.Auth.OAuth2Auth.AllowedGrantTypes) == 0 {
+				c.Auth.OAuth2Auth.AllowedGrantTypes = []string{"authorization_code", "refresh_token", "client_credentials"}
 			}
 		default:
 			return fmt.Errorf("unsupported auth type: %s", c.Auth.Type)
