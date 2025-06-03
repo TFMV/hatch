@@ -255,21 +255,85 @@ func sqlNullBool(b bool) sql.NullBool       { return sql.NullBool{Bool: b, Valid
 // constants
 //───────────────────────────────────
 
-// DuckDB keyword / function sets (trimmed for brevity here).
+// DuckDB keyword / function sets
 var (
 	duckdbKeywords = []string{
-		"ABORT", "ACTION", "ADD", "AFTER", "ALL" /* … */, "WITHOUT",
+		"ABORT", "ACTION", "ADD", "AFTER", "ALL", "ALTER", "AND", "ANY",
+		"AS", "ASC", "ATTACH", "AUTOINCREMENT", "BEFORE", "BEGIN", "BETWEEN",
+		"BY", "CASCADE", "CASE", "CAST", "CHECK", "COLLATE", "COLUMN",
+		"COMMIT", "CONFLICT", "CONSTRAINT", "CREATE", "CROSS", "CURRENT_DATE",
+		"CURRENT_TIME", "CURRENT_TIMESTAMP", "DATABASE", "DEFAULT", "DEFERRABLE",
+		"DEFERRED", "DELETE", "DESC", "DETACH", "DISTINCT", "DROP", "EACH",
+		"ELSE", "END", "ESCAPE", "EXCEPT", "EXCLUDE", "EXISTS", "EXPLAIN",
+		"FAIL", "FILTER", "FIRST", "FOLLOWING", "FOR", "FOREIGN", "FROM",
+		"FULL", "GROUP", "HAVING", "IF", "IGNORE", "IMMEDIATE", "IN",
+		"INDEX", "INITIALLY", "INNER", "INSERT", "INSTEAD", "INTERSECT",
+		"INTO", "IS", "ISNULL", "JOIN", "KEY", "LAST", "LEFT", "LIKE",
+		"LIMIT", "MATCH", "NATURAL", "NO", "NOT", "NOTNULL", "NULL",
+		"OF", "OFFSET", "ON", "OR", "ORDER", "OUTER", "OVER", "PARTITION",
+		"PLAN", "PRAGMA", "PRIMARY", "RANGE", "RECURSIVE", "REFERENCES",
+		"REINDEX", "RELEASE", "RENAME", "REPLACE", "RESTRICT", "RETURNING",
+		"RIGHT", "ROLLBACK", "ROW", "ROWS", "SAVEPOINT", "SELECT", "SET",
+		"TABLE", "TEMP", "TEMPORARY", "THEN", "TIES", "TO", "TRANSACTION",
+		"TRIGGER", "UNBOUNDED", "UNION", "UNIQUE", "UPDATE", "USING",
+		"VACUUM", "VALUES", "VIEW", "VIRTUAL", "WHEN", "WHERE", "WINDOW",
+		"WITH", "WITHOUT",
 	}
+
 	duckdbNumericFns = []string{
-		"ABS", "ACOS", "ASIN" /* … */, "TRUNC",
+		"ABS", "ACOS", "ASIN", "ATAN", "ATAN2", "CEIL", "CEILING", "COS",
+		"COT", "DEGREES", "DIV", "EXP", "FLOOR", "LN", "LOG", "MOD",
+		"PI", "POW", "POWER", "RADIANS", "RAND", "RANDOM", "ROUND", "SIGN",
+		"SIN", "SQRT", "TAN", "TRUNC", "WIDTH_BUCKET",
 	}
+
 	duckdbStringFns = []string{
-		"ASCII", "CHAR", "CHAR_LENGTH" /* … */, "UCASE",
+		"ASCII", "CHAR", "CHAR_LENGTH", "CHR", "CONCAT", "CONTAINS",
+		"ENDS_WITH", "INITCAP", "LEFT", "LENGTH", "LIKE", "LOWER",
+		"LPAD", "LTRIM", "POSITION", "REGEXP_MATCHES", "REGEXP_REPLACE",
+		"REGEXP_EXTRACT", "REPEAT", "REPLACE", "REVERSE", "RIGHT", "RPAD",
+		"RTRIM", "SPLIT_PART", "STARTS_WITH", "STRPOS", "SUBSTRING", "TRIM",
+		"UPPER",
 	}
 )
 
-// Java SQL Types (JDBC) – only the ones used so far.
+// Java SQL Types (JDBC) – extend as needed
 const (
-	java_sql_Types_BOOLEAN = 16
-	java_sql_Types_TINYINT = -6
+	java_sql_Types_BIT           = -7
+	java_sql_Types_TINYINT       = -6
+	java_sql_Types_SMALLINT      = 5
+	java_sql_Types_INTEGER       = 4
+	java_sql_Types_BIGINT        = -5
+	java_sql_Types_FLOAT         = 6
+	java_sql_Types_REAL          = 7
+	java_sql_Types_DOUBLE        = 8
+	java_sql_Types_NUMERIC       = 2
+	java_sql_Types_DECIMAL       = 3
+	java_sql_Types_CHAR          = 1
+	java_sql_Types_VARCHAR       = 12
+	java_sql_Types_LONGVARCHAR   = -1
+	java_sql_Types_DATE          = 91
+	java_sql_Types_TIME          = 92
+	java_sql_Types_TIMESTAMP     = 93
+	java_sql_Types_BINARY        = -2
+	java_sql_Types_VARBINARY     = -3
+	java_sql_Types_LONGVARBINARY = -4
+	java_sql_Types_BOOLEAN       = 16
+	java_sql_Types_NULL          = 0
+	java_sql_Types_OTHER         = 1111
+	java_sql_Types_BLOB          = 2004
+	java_sql_Types_CLOB          = 2005
+	java_sql_Types_ARRAY         = 2003
+	java_sql_Types_STRUCT        = 2002
+	java_sql_Types_REF           = 2006
+	java_sql_Types_DATALINK      = 70
+	java_sql_Types_ROWID         = -8
+	java_sql_Types_SQLXML        = 2009
+	java_sql_Types_NCHAR         = -15
+	java_sql_Types_NVARCHAR      = -9
+	java_sql_Types_LONGNVARCHAR  = -16
+	java_sql_Types_NCLOB         = 2011
+	java_sql_Types_REF_CURSOR    = 2012
+	java_sql_Types_TIME_WITH_TZ  = 2013
+	java_sql_Types_TIMESTAMP_TZ  = 2014
 )
