@@ -39,7 +39,7 @@ Hatch is scaffolding, not a silo.
 
 ## 🛩️ Performance
 
-For detailed performance benchmarks, see [benchmarks.md](flight/benchmarks.md).
+For detailed performance benchmarks, see [benchmarks.md](benchmarks.md).
 
 ---
 
