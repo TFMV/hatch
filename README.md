@@ -41,21 +41,31 @@ Hatch is scaffolding, not a silo.
 
 ## Benchmarks
 
-| Benchmark                       | N       | Time/op  | B/op     | Allocs/op |
-| ------------------------------- | ------- | -------- | -------- | --------- |
-| `DoGetStatement/Size=1000`      | 6,247   | 176.3 µs | 36.0 KB  | 873       |
-| `DoGetStatement/Size=10000`     | 1,422   | 849.3 µs | 290.5 KB | 10,203    |
-| `DoGetStatement/Size=100000`    | 158     | 7.48 ms  | 2.80 MB  | 103,461   |
-| `RecordBuilderPool/Get/Put`     | 133M    | 8.28 ns  | 0 B      | 0         |
-| `RecordBuilderPool/BuildRecord` | 744,535 | 1.52 µs  | 2.6 KB   | 31        |
-| `ByteBufferPool/Size=64`        | 34.8M   | 33.9 ns  | 24 B     | 1         |
-| `ByteBufferPool/Size=1024`      | 34.6M   | 34.4 ns  | 24 B     | 1         |
-| `ByteBufferPool/Size=4096`      | 34.6M   | 38.4 ns  | 24 B     | 1         |
-| `ByteBufferPool/Size=16384`     | 32.9M   | 36.2 ns  | 24 B     | 1         |
-| `ParallelQueryExecution`        | 19,440  | 65.0 µs  | 36.0 KB  | 873       |
-| `MemoryUsage/Size=1000`         | 20,521  | 57.6 µs  | 88.8 KB  | 82        |
-| `MemoryUsage/Size=10000`        | 2,025   | 603.2 µs | 1.34 MB  | 119       |
-| `MemoryUsage/Size=100000`       | 295     | 4.00 ms  | 9.85 MB  | 147       |
+Hatch is designed for high performance and low latency. Below are benchmark results from early testing. While DoGetStatement still has room for optimization, most operations perform reasonably well across a variety of sizes.
+
+| Operation                 | Size      | Latency      | Memory   | Allocs  |
+| ------------------------- | --------- | ------------ | -------- | ------- |
+| GetFlightInfoStatement    | Simple    | 151 ns/op    | 15.7 KB  | 192     |
+| DoGetStatement            | 1K rows   | 179 μs/op    | 36.0 KB  | 873     |
+| DoGetStatement            | 10K rows  | 855 μs/op    | 290.5 KB | 10,203  |
+| DoGetStatement            | 100K rows | 7.67 ms/op   | 2.79 MB  | 103,462 |
+| RecordBuilderPool Get/Put | –         | 8.43 ns/op   | 0 B      | 0       |
+| RecordBuilderPool Build   | –         | 1.48 μs/op   | 2.62 KB  | 31      |
+| ByteBufferPool (64B)      | –         | 33.66 ns/op  | 24 B     | 1       |
+| ByteBufferPool (1KB)      | –         | 33.05 ns/op  | 24 B     | 1       |
+| ByteBufferPool (4KB)      | –         | 36.77 ns/op  | 24 B     | 1       |
+| ByteBufferPool (16KB)     | –         | 36.01 ns/op  | 24 B     | 1       |
+| ParallelQueryExecution    | 1K rows   | 65.08 μs/op  | 36.0 KB  | 873     |
+| MemoryUsage               | 1K rows   | 56.10 μs/op  | 88.8 KB  | 82      |
+| MemoryUsage               | 10K rows  | 566.33 μs/op | 1.34 MB  | 119     |
+| MemoryUsage               | 100K rows | 3.98 ms/op   | 9.85 MB  | 147     |
+
+These benchmarks were run on a machine with the following specifications:
+
+- CPU: Apple M2 Pro
+- Memory: 32GB
+- Go version: 1.24.3
+- DuckDB version: 1.3.0
 
 ---
 
@@ -184,9 +194,9 @@ flowchart LR
 
 ## 📚 Usage Patterns
 
-* **Ad‑hoc Analytics:** Point Superset or Tableau at `grpc://host:32010` and run.
-* **Streaming Extracts:** Pipe result sets directly into Arrow Flight streams for ML features.
-* **Embedded Mode:** Link the library, embed DuckDB, and expose Flight in‑process.
+- **Ad‑hoc Analytics:** Point Superset or Tableau at `grpc://host:32010` and run.
+- **Streaming Extracts:** Pipe result sets directly into Arrow Flight streams for ML features.
+- **Embedded Mode:** Link the library, embed DuckDB, and expose Flight in‑process.
 
 ---
 
