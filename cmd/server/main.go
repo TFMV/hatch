@@ -34,40 +34,52 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "flight-server",
-	Short: "DuckDB Flight SQL Server",
-	Long: `A high-performance Flight SQL server backed by DuckDB.
-	
-This server implements the Apache Arrow Flight SQL protocol, providing
-a standard interface for SQL queries over the Arrow Flight RPC framework.`,
+	Use:   "hatch",
+	Short: "Hatch Flight SQL Server",
+	Long: `A high-performance Flight SQL server backed by Hatch.
+
+Hatch implements a Flight SQL Server backed by a DuckDB database.`,
+}
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start the Hatch Flight SQL Server",
+	Long: `Start the Hatch Flight SQL Server with the specified configuration.
+
+Example:
+  hatch serve --config ./config.yaml
+  hatch serve --address 0.0.0.0:32010 --database :memory:`,
 	RunE: runServer,
 }
 
 func init() {
+	// Add serve command
+	rootCmd.AddCommand(serveCmd)
+
 	// Command flags
-	rootCmd.PersistentFlags().StringP("config", "c", "", "config file path")
-	rootCmd.PersistentFlags().String("address", "0.0.0.0:8815", "server listen address")
-	rootCmd.PersistentFlags().String("database", ":memory:", "DuckDB database path")
-	rootCmd.PersistentFlags().String("log-level", "info", "log level (debug, info, warn, error)")
-	rootCmd.PersistentFlags().Bool("tls", false, "enable TLS")
-	rootCmd.PersistentFlags().String("tls-cert", "", "TLS certificate file")
-	rootCmd.PersistentFlags().String("tls-key", "", "TLS key file")
-	rootCmd.PersistentFlags().Bool("auth", false, "enable authentication")
-	rootCmd.PersistentFlags().Bool("metrics", true, "enable Prometheus metrics")
-	rootCmd.PersistentFlags().String("metrics-address", ":9090", "metrics server address")
-	rootCmd.PersistentFlags().Bool("health", true, "enable health checks")
-	rootCmd.PersistentFlags().Int("max-connections", 100, "maximum concurrent connections")
-	rootCmd.PersistentFlags().Duration("connection-timeout", 30*time.Second, "connection timeout")
-	rootCmd.PersistentFlags().Duration("query-timeout", 5*time.Minute, "default query timeout")
-	rootCmd.PersistentFlags().Int64("max-message-size", 16*1024*1024, "maximum message size in bytes")
-	rootCmd.PersistentFlags().Bool("reflection", true, "enable gRPC reflection")
-	rootCmd.PersistentFlags().Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
+	serveCmd.Flags().StringP("config", "c", "", "config file path")
+	serveCmd.Flags().String("address", "0.0.0.0:32010", "server listen address")
+	serveCmd.Flags().String("database", ":memory:", "DuckDB database path")
+	serveCmd.Flags().String("log-level", "info", "log level (debug, info, warn, error)")
+	serveCmd.Flags().Bool("tls", false, "enable TLS")
+	serveCmd.Flags().String("tls-cert", "", "TLS certificate file")
+	serveCmd.Flags().String("tls-key", "", "TLS key file")
+	serveCmd.Flags().Bool("auth", false, "enable authentication")
+	serveCmd.Flags().Bool("metrics", true, "enable Prometheus metrics")
+	serveCmd.Flags().String("metrics-address", ":9090", "metrics server address")
+	serveCmd.Flags().Bool("health", true, "enable health checks")
+	serveCmd.Flags().Int("max-connections", 100, "maximum concurrent connections")
+	serveCmd.Flags().Duration("connection-timeout", 30*time.Second, "connection timeout")
+	serveCmd.Flags().Duration("query-timeout", 5*time.Minute, "default query timeout")
+	serveCmd.Flags().Int64("max-message-size", 16*1024*1024, "maximum message size in bytes")
+	serveCmd.Flags().Bool("reflection", true, "enable gRPC reflection")
+	serveCmd.Flags().Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
 
 	// Bind flags to viper
-	if err := viper.BindPFlags(rootCmd.PersistentFlags()); err != nil {
+	if err := viper.BindPFlags(serveCmd.Flags()); err != nil {
 		panic(fmt.Errorf("failed to bind flags: %w", err))
 	}
-	viper.SetEnvPrefix("FLIGHT")
+	viper.SetEnvPrefix("HATCH")
 	viper.AutomaticEnv()
 
 	// Add version command
@@ -75,7 +87,7 @@ func init() {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("DuckDB Flight SQL Server\n")
+			fmt.Printf("Hatch Flight SQL Server\n")
 			fmt.Printf("Version:    %s\n", version)
 			fmt.Printf("Commit:     %s\n", commit)
 			fmt.Printf("Build Date: %s\n", buildDate)
@@ -103,7 +115,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		Str("version", version).
 		Str("commit", commit).
 		Str("build_date", buildDate).
-		Msg("Starting DuckDB Flight SQL Server")
+		Msg("Starting Hatch Flight SQL Server")
 
 	// Create metrics collector
 	var metricsCollector metrics.Collector

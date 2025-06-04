@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -105,6 +103,14 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 		sessions: make(map[string]*Session),
 	}
 
+	// Initialize the base server
+	srv.BaseServer = flightsql.BaseServer{}
+
+	// Register SQL info
+	if err := srv.registerSqlInfo(); err != nil {
+		return nil, fmt.Errorf("failed to register SQL info: %w", err)
+	}
+
 	// Use global tracked allocator
 	srv.allocator = memory.GetAllocator()
 
@@ -162,14 +168,6 @@ func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*
 	srv.metadataHandler = handlers.NewMetadataHandler(metadataService, srv.allocator, logAdapter, handlerMetricsAdapter)
 	srv.transactionHandler = handlers.NewTransactionHandler(transactionService, logAdapter, handlerMetricsAdapter)
 	srv.preparedStatementHandler = handlers.NewPreparedStatementHandler(preparedStatementService, queryService, srv.allocator, logAdapter, handlerMetricsAdapter)
-
-	// Initialize the base server
-	srv.BaseServer = flightsql.BaseServer{}
-
-	// Register SQL info
-	if err := srv.registerSqlInfo(); err != nil {
-		return nil, fmt.Errorf("failed to register SQL info: %w", err)
-	}
 
 	// Initialize OAuth2 endpoints if enabled
 	if cfg.Auth.Enabled && cfg.Auth.Type == "oauth2" {
@@ -295,45 +293,54 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		return nil, err
 	}
 
-	// Prepare CommandStatementQuery for FlightDescriptor.Cmd
+	// Create the StatementQuery command
 	cmdQueryProto := &flightpb.CommandStatementQuery{
 		Query: query,
 	}
-	descCmdBytes, err := proto.Marshal(cmdQueryProto)
+
+	// Create the Any message
+	anyCmd, err := anypb.New(cmdQueryProto)
 	if err != nil {
-		s.logger.Error().Err(err).Msg("failed to marshal CommandStatementQuery for FlightDescriptor")
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_desc_cmd_failed")
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal CommandStatementQuery for descriptor: %v", err))
+		s.logger.Error().Err(err).Msg("failed to create Any for CommandStatementQuery")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "anypb_new_failed")
+		return nil, status.Errorf(codes.Internal, "failed to create Any message: %v", err)
 	}
 
-	// The StatementHandle will contain the raw query string bytes
+	// Marshal the Any message
+	cmdBytes, err := proto.Marshal(anyCmd)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("failed to marshal Any(CommandStatementQuery)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal command: %v", err))
+	}
+
+	// Create the ticket using StatementQuery
 	ticketQueryProto := &flightpb.TicketStatementQuery{
 		StatementHandle: []byte(query),
 	}
 	anyTicket, err := anypb.New(ticketQueryProto)
 	if err != nil {
-		s.logger.Error().Err(err).Msg("failed to create Any for TicketStatementQuery for Endpoint Ticket")
+		s.logger.Error().Err(err).Msg("failed to create Any for TicketStatementQuery")
 		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "anypb_new_ticket_failed")
-		return nil, status.Errorf(codes.Internal, "failed to create Any message for ticket query: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to create Any message for ticket: %v", err)
 	}
-	epTicketBytes, err := proto.Marshal(anyTicket)
+	ticketBytes, err := proto.Marshal(anyTicket)
 	if err != nil {
-		s.logger.Error().Err(err).Msg("failed to marshal Any(TicketStatementQuery) for Endpoint Ticket")
-		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_ep_ticket_failed")
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal Any(TicketStatementQuery) for endpoint: %v", err))
+		s.logger.Error().Err(err).Msg("failed to marshal Any(TicketStatementQuery)")
+		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement", "error", "marshal_ticket_failed")
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to marshal ticket: %v", err))
 	}
-	s.logger.Debug().Hex("endpoint_ticket_bytes", epTicketBytes).Int("len", len(epTicketBytes)).Str("underlying_handle_content", query).Msg("GetFlightInfoStatement: generated endpoint ticket bytes (Any wrapping TicketStatementQuery with raw query handle)")
 
-	// Create the flight info
+	// Create the flight info with proper descriptor and ticket
 	flightInfo := &flight.FlightInfo{
 		Schema: info.Schema,
 		FlightDescriptor: &flight.FlightDescriptor{
 			Type: flight.DescriptorCMD,
-			Cmd:  descCmdBytes,
+			Cmd:  cmdBytes,
 		},
 		Endpoint: []*flight.FlightEndpoint{{
 			Ticket: &flight.Ticket{
-				Ticket: epTicketBytes,
+				Ticket: ticketBytes,
 			},
 			Location: nil,
 		}},
@@ -345,19 +352,10 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 	return flightInfo, nil
 }
 
-// cleanQuery removes any control characters from the query string
+// cleanQuery removes any unwanted characters from the query string.
 func cleanQuery(query string) string {
-	// Remove any leading/trailing whitespace and control characters
-	query = strings.TrimSpace(query)
-
-	// Remove any control characters from the query
-	var cleaned strings.Builder
-	for _, r := range query {
-		if !unicode.IsControl(r) {
-			cleaned.WriteRune(r)
-		}
-	}
-	return cleaned.String()
+	// Remove any null bytes that might have been added during protobuf serialization
+	return strings.TrimRight(query, "\x00")
 }
 
 // DoGetStatement implements the FlightSQL interface.
@@ -368,24 +366,21 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 	handleBytes := ticket.GetStatementHandle()
 	s.logger.Debug().Hex("received_handle_bytes", handleBytes).Int("len", len(handleBytes)).Msg("DoGetStatement: initial handle bytes received")
 
-	var query string
-	var anyCmd anypb.Any
-
-	// Attempt to unmarshal handleBytes as Any -> TicketStatementQuery
-	if errUnmarshalAny := proto.Unmarshal(handleBytes, &anyCmd); errUnmarshalAny == nil {
-		var tsqProto flightpb.TicketStatementQuery
-		if errUnmarshalTSQ := anyCmd.UnmarshalTo(&tsqProto); errUnmarshalTSQ == nil {
-			query = string(tsqProto.GetStatementHandle())
-			s.logger.Debug().Str("query_from_tsq", query).Msg("DoGetStatement: Got query from TicketStatementQuery")
+	// Try to unmarshal as Any -> TicketStatementQuery first
+	var anyTicket anypb.Any
+	if err := proto.Unmarshal(handleBytes, &anyTicket); err == nil {
+		var ticketProto flightpb.TicketStatementQuery
+		if err := anyTicket.UnmarshalTo(&ticketProto); err == nil {
+			handleBytes = ticketProto.GetStatementHandle()
+			s.logger.Debug().Hex("handle_bytes_from_ticket", handleBytes).Msg("DoGetStatement: extracted handle from TicketStatementQuery")
 		} else {
-			s.logger.Debug().Err(errUnmarshalTSQ).Msg("DoGetStatement: Unmarshal as TicketStatementQuery FAILED")
+			s.logger.Debug().Err(err).Msg("DoGetStatement: failed to unmarshal TicketStatementQuery from Any")
 		}
 	} else {
-		s.logger.Debug().Err(errUnmarshalAny).Hex("handle_bytes", handleBytes).Msg("DoGetStatement: Unmarshal as Any FAILED. Assuming handle bytes are raw query string.")
-		query = string(handleBytes)
+		s.logger.Debug().Err(err).Msg("DoGetStatement: failed to unmarshal as Any")
 	}
 
-	query = cleanQuery(query)
+	query := cleanQuery(string(handleBytes))
 	s.logger.Debug().Str("final_query_for_sql_execution", query).Msg("DoGetStatement")
 
 	// Execute the query and get the schema and record channel
@@ -395,137 +390,7 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 		return nil, nil, status.Error(codes.Internal, fmt.Sprintf("failed to execute query: %v", err))
 	}
 
-	// Create a buffered channel for flight chunks
-	chunkChan := make(chan flight.StreamChunk, runtime.NumCPU()*2)
-
-	// Start a goroutine to process records and send chunks
-	go func() {
-		defer close(chunkChan)
-
-		for chunk := range recordChan {
-			if chunk.Err != nil {
-				s.logger.Error().Err(chunk.Err).Msg("Error in record stream")
-				continue
-			}
-
-			record := chunk.Data
-			if record == nil {
-				continue
-			}
-
-			// Implement zero-copy record handling
-			if !s.config.SafeCopy {
-				record.Retain() // Transfer ownership to the goroutine
-
-				// Try to send with back-pressure handling
-			sendLoop:
-				for {
-					select {
-					case <-ctx.Done():
-						record.Release()
-						return
-					case chunkChan <- flight.StreamChunk{Data: record}:
-						break sendLoop
-					default:
-						runtime.Gosched() // Yield instead of blocking
-					}
-				}
-				continue
-			}
-
-			// Safe copy path for unsafe clients
-			builder := s.recordBuilderPool.Get(record.Schema())
-			defer s.recordBuilderPool.Put(builder)
-
-			// Copy data from each column
-			for i := 0; i < int(record.NumCols()); i++ {
-				col := record.Column(i)
-				if col == nil {
-					continue
-				}
-
-				fieldBuilder := builder.Field(i)
-				if fieldBuilder == nil {
-					continue
-				}
-
-				// Copy column data
-				for j := 0; j < int(col.Len()); j++ {
-					if col.IsNull(j) {
-						fieldBuilder.AppendNull()
-						continue
-					}
-
-					switch arr := col.(type) {
-					case *array.Int8:
-						fieldBuilder.(*array.Int8Builder).Append(arr.Value(j))
-					case *array.Int16:
-						fieldBuilder.(*array.Int16Builder).Append(arr.Value(j))
-					case *array.Int32:
-						fieldBuilder.(*array.Int32Builder).Append(arr.Value(j))
-					case *array.Int64:
-						fieldBuilder.(*array.Int64Builder).Append(arr.Value(j))
-					case *array.Uint8:
-						fieldBuilder.(*array.Uint8Builder).Append(arr.Value(j))
-					case *array.Uint16:
-						fieldBuilder.(*array.Uint16Builder).Append(arr.Value(j))
-					case *array.Uint32:
-						fieldBuilder.(*array.Uint32Builder).Append(arr.Value(j))
-					case *array.Uint64:
-						fieldBuilder.(*array.Uint64Builder).Append(arr.Value(j))
-					case *array.Float32:
-						fieldBuilder.(*array.Float32Builder).Append(arr.Value(j))
-					case *array.Float64:
-						fieldBuilder.(*array.Float64Builder).Append(arr.Value(j))
-					case *array.String:
-						fieldBuilder.(*array.StringBuilder).Append(arr.Value(j))
-					case *array.Boolean:
-						fieldBuilder.(*array.BooleanBuilder).Append(arr.Value(j))
-					case *array.Binary:
-						fieldBuilder.(*array.BinaryBuilder).Append(arr.Value(j))
-					case *array.Decimal128:
-						fieldBuilder.(*array.Decimal128Builder).Append(arr.Value(j))
-					case *array.Timestamp:
-						fieldBuilder.(*array.TimestampBuilder).Append(arr.Value(j))
-					case *array.Time32:
-						fieldBuilder.(*array.Time32Builder).Append(arr.Value(j))
-					case *array.Time64:
-						fieldBuilder.(*array.Time64Builder).Append(arr.Value(j))
-					case *array.Date32:
-						fieldBuilder.(*array.Date32Builder).Append(arr.Value(j))
-					case *array.Date64:
-						fieldBuilder.(*array.Date64Builder).Append(arr.Value(j))
-					default:
-						s.logger.Error().
-							Str("type", fmt.Sprintf("%T", col)).
-							Int("column", i).
-							Msg("Unsupported column type")
-						continue
-					}
-				}
-			}
-
-			// Create a new record from the builder
-			recordCopy := builder.NewRecord()
-			defer recordCopy.Release()
-
-			// Send the record copy as a chunk with back-pressure handling
-		sendCopyLoop:
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case chunkChan <- flight.StreamChunk{Data: recordCopy}:
-					break sendCopyLoop
-				default:
-					runtime.Gosched() // Yield instead of blocking
-				}
-			}
-		}
-	}()
-
-	s.metrics.IncrementCounter("flight_do_get_statement_success")
-	return schema, chunkChan, nil
+	return schema, recordChan, nil
 }
 
 // DoPutCommandStatementUpdate implements the FlightSQL interface.
