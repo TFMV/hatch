@@ -13,7 +13,8 @@ Hatch keeps DuckDB's magic small, open, and composable so your data can fly wher
 
 ---
 
-> This project is in early development. It may change, break, or evolve quickly. Contributions, ideas, and experiments are welcome
+> This project is in early development. It may change, break, or evolve quickly. Contributions, ideas, and experiments are welcome.
+> For a producction ready implementation, see GizmoSQL (C++).
 
 ## 🙋 Why Hatch Exists
 
@@ -264,3 +265,167 @@ flowchart LR
 ## 📄 License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
+
+## 🛠️ Development
+
+### Prerequisites
+
+- Go 1.21 or later
+- DuckDB with Arrow extension
+- Make (optional, for using Makefile commands)
+
+### Building from Source
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/TFMV/hatch.git
+cd hatch
+```
+
+2. Install dependencies:
+
+```bash
+go mod download
+```
+
+3. Build the server:
+
+```bash
+go build -o bin/hatch ./cmd/server
+```
+
+Or using Make:
+
+```bash
+make build
+```
+
+### Running Tests
+
+Run all tests:
+
+```bash
+go test ./...
+```
+
+Run tests with coverage:
+
+```bash
+go test -cover ./...
+```
+
+Or using Make:
+
+```bash
+make test
+make test-coverage
+```
+
+### Development Workflow
+
+1. Start the development server:
+
+```bash
+go run cmd/server/main.go serve --config ./config.yaml
+```
+
+2. Run the linter:
+
+```bash
+make lint
+```
+
+3. Format code:
+
+```bash
+make fmt
+```
+
+### Docker Development
+
+Build the Docker image:
+
+```bash
+docker build -t hatch .
+```
+
+Run in Docker:
+
+```bash
+docker run -p 32010:32010 -v $(pwd)/config.yaml:/app/config.yaml hatch
+```
+
+### Performance Testing
+
+Run benchmarks:
+
+```bash
+go test -bench=. ./...
+```
+
+Or using Make:
+
+```bash
+make benchmark
+```
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests and linting
+5. Submit a pull request
+
+### Debugging
+
+Enable debug logging in config.yaml:
+
+```yaml
+logging:
+  level: "debug"
+  format: "json"
+```
+
+Enable tracing:
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"
+```
+
+### Common Issues
+
+1. **Port already in use**: Change the port in config.yaml
+2. **DuckDB connection issues**: Check DSN in config.yaml
+3. **Authentication failures**: Verify auth configuration
+
+### IDE Setup
+
+#### VS Code
+
+Recommended extensions:
+
+- Go
+- Go Test Explorer
+- YAML
+- Docker
+
+#### GoLand
+
+Recommended plugins:
+
+- Go
+- YAML
+- Docker
+- Makefile
+
+### Release Process
+
+1. Update version in `VERSION` file
+2. Update CHANGELOG.md
+3. Create git tag
+4. Push to GitHub
+5. GitHub Actions will build and release
