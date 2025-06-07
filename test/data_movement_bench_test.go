@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +22,9 @@ import (
 	"github.com/TFMV/hatch/cmd/server/server"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // isCI returns true if running in a CI environment
@@ -514,7 +517,7 @@ func startServer(b *testing.B) (*server.FlightSQLServer, string) {
 	require.NoError(b, err, "Failed to create server")
 
 	// Create gRPC server and start it
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(srv.GetMiddleware()...)
 	srv.Register(grpcServer)
 
 	// Create new listener for actual server
@@ -523,7 +526,7 @@ func startServer(b *testing.B) (*server.FlightSQLServer, string) {
 
 	// Start server in background
 	go func() {
-		if err := grpcServer.Serve(listener); err != nil {
+		if err := grpcServer.Serve(listener); err != nil && err != grpc.ErrServerStopped {
 			b.Logf("Server stopped: %v", err)
 		}
 	}()
@@ -532,14 +535,35 @@ func startServer(b *testing.B) (*server.FlightSQLServer, string) {
 }
 
 // connectClient creates a Flight client connected to the given address
-func connectClient(b *testing.B, addr string) flight.Client {
+func connectClient(b *testing.B, addr string) *flightsql.Client {
 	// Set up client connection
-	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure())
-	require.NoError(b, err, "Failed to dial server")
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
 
-	// Create client
-	client := flight.NewClientFromConn(conn, nil)
+	// Create Flight SQL client with retries
+	var client *flightsql.Client
+	var err error
+	for i := 0; i < 5; i++ {
+		client, err = flightsql.NewClient(addr, nil, nil, dialOpts...)
+		if err == nil {
+			// Verify client is responsive
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, errPing := client.GetSqlInfo(ctx, []flightsql.SqlInfo{})
+			cancel()
+			if errPing == nil {
+				break
+			}
+			err = fmt.Errorf("client created but GetSqlInfo failed: %w", errPing)
+			if client != nil {
+				client.Close()
+			}
+		}
+		time.Sleep(time.Duration(i+1) * time.Second)
+	}
+	require.NoError(b, err, "Failed to create Flight SQL client")
+	require.NotNil(b, client, "Flight SQL client is nil")
+
 	return client
 }
 
@@ -551,6 +575,7 @@ func BenchmarkFlightTransfer(b *testing.B) {
 
 	// Connect client
 	client := connectClient(b, addr)
+	defer client.Close()
 
 	// Create test data sizes
 	sizes := []struct {
@@ -566,48 +591,68 @@ func BenchmarkFlightTransfer(b *testing.B) {
 		b.Run(fmt.Sprintf("Rows=%d", size.rows), func(b *testing.B) {
 			ctx := context.Background()
 
-			// Create test table with specified number of rows
-			createQuery := fmt.Sprintf(`
-				CREATE TABLE test_data AS 
-				SELECT 
-					i AS id,
-					'name-' || i::VARCHAR AS name,
-					random() * 1000 AS value,
-					(now() + (i * interval '1 second'))::TIMESTAMP AS timestamp,
-					random()::VARCHAR AS text_data,
-					(random() > 0.5) AS bool_data,
-					random() * 1.0 AS double_data
-				FROM range(1, %d) AS t(i)
-			`, size.rows)
+			// Drop table if exists
+			_, err := client.ExecuteUpdate(ctx, "DROP TABLE IF EXISTS test_data")
+			require.NoError(b, err, "Failed to drop existing table")
 
-			cmd := &statementUpdate{query: createQuery}
-			_, err := srv.DoPutCommandStatementUpdate(ctx, cmd)
-			require.NoError(b, err, "Failed to create test data")
+			// Create the table
+			createTableQuery := `
+				CREATE TABLE test_data (
+					id INTEGER,
+					name VARCHAR,
+					value DOUBLE,
+					timestamp TIMESTAMP,
+					text_data VARCHAR,
+					bool_data BOOLEAN,
+					double_data DOUBLE
+				)`
+			_, err = client.ExecuteUpdate(ctx, createTableQuery)
+			require.NoError(b, err, "Failed to create test table")
+
+			// Insert the test data in batches to avoid memory issues
+			batchSize := 10000
+			for i := 0; i < size.rows; i += batchSize {
+				end := i + batchSize
+				if end > size.rows {
+					end = size.rows
+				}
+
+				// Create a batch of values
+				values := make([]string, 0, end-i)
+				for j := i + 1; j <= end; j++ {
+					values = append(values, fmt.Sprintf("(%d, 'name-%d', %f, CURRENT_TIMESTAMP, 'text-%d', %t, %f)",
+						j, j, rand.Float64()*1000, j, j%2 == 0, rand.Float64()))
+				}
+
+				// Insert the batch
+				insertQuery := fmt.Sprintf(`
+					INSERT INTO test_data (id, name, value, timestamp, text_data, bool_data, double_data)
+					VALUES %s
+				`, strings.Join(values, ","))
+
+				_, err = client.ExecuteUpdate(ctx, insertQuery)
+				require.NoError(b, err, "Failed to insert test data batch")
+			}
 
 			// Verify row count
-			verifyQuery := "SELECT COUNT(*) FROM test_data"
-			_, recordChan, err := srv.QueryHandler().ExecuteQueryAndStream(ctx, verifyQuery)
+			info, err := client.Execute(ctx, "SELECT COUNT(*) FROM test_data")
 			require.NoError(b, err)
 
-			var count int64
-			for record := range recordChan {
-				if record.Data != nil {
-					count = record.Data.Column(0).(*array.Int64).Value(0)
-					record.Data.Release()
-				}
-			}
+			reader, err := client.DoGet(ctx, info.Endpoint[0].Ticket)
+			require.NoError(b, err)
+			defer reader.Release()
+
+			record, err := reader.Read()
+			require.NoError(b, err)
+			count := record.Column(0).(*array.Int64).Value(0)
 			require.Equal(b, int64(size.rows), count, "Wrong number of rows created")
 
 			b.ResetTimer()
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				// Get FlightInfo
-				desc := &flight.FlightDescriptor{
-					Type: flight.DescriptorCMD,
-					Cmd:  []byte("SELECT * FROM test_data"),
-				}
-				info, err := client.GetFlightInfo(ctx, desc)
+				// Execute query through Flight
+				info, err := client.Execute(ctx, "SELECT * FROM test_data")
 				require.NoError(b, err)
 
 				// Track metrics
@@ -619,10 +664,7 @@ func BenchmarkFlightTransfer(b *testing.B) {
 
 				// Get data stream
 				for _, endpoint := range info.Endpoint {
-					stream, err := client.DoGet(ctx, endpoint.Ticket)
-					require.NoError(b, err)
-
-					reader, err := flight.NewRecordReader(stream)
+					reader, err := client.DoGet(ctx, endpoint.Ticket)
 					require.NoError(b, err)
 					defer reader.Release()
 
@@ -663,9 +705,7 @@ func BenchmarkFlightTransfer(b *testing.B) {
 			}
 
 			// Clean up
-			dropQuery := "DROP TABLE test_data"
-			cmd = &statementUpdate{query: dropQuery}
-			_, err = srv.DoPutCommandStatementUpdate(ctx, cmd)
+			_, err = client.ExecuteUpdate(ctx, "DROP TABLE test_data")
 			require.NoError(b, err, "Failed to drop test table")
 		})
 	}
