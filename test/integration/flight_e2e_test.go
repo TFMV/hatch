@@ -105,6 +105,9 @@ type FlightE2ETestSuite struct {
 }
 
 func TestFlightE2ETestSuite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Flight E2E test suite in CI environment")
+	}
 	suite.Run(t, new(FlightE2ETestSuite))
 }
 
