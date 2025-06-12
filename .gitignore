@@ -9,8 +9,10 @@
 *.dylib
 go-duckdb/
 arrow-go/
+gizmosql/
 obsolete/
 art/
+test/
 # Test binary, built with `go test -c`
 *.test
 benchmarks.md

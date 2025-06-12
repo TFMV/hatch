@@ -296,7 +296,31 @@ func (s *FlightSQLServer) GetFlightInfoStatement(ctx context.Context, cmd flight
 		Str("transaction_id", string(cmd.GetTransactionId())).
 		Msg("GetFlightInfoStatement: executing query")
 
-	// Get flight info from the query handler
+	// Check if this is an update statement (DDL/DML) vs query statement (DQL)
+	if s.queryHandler.IsUpdateStatement(query) {
+		// For DDL/DML statements, JDBC expects them to be handled via DoPutCommandStatementUpdate
+		// We return a special FlightInfo that indicates this should be an update operation
+		s.logger.Debug().
+			Str("query", query).
+			Msg("GetFlightInfoStatement: detected update statement, returning update schema")
+
+		// Create a simple update count schema
+		updateSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "rows_affected", Type: arrow.PrimitiveTypes.Int64},
+		}, nil)
+
+		return &flight.FlightInfo{
+			Schema:           flight.SerializeSchema(updateSchema, s.allocator),
+			FlightDescriptor: desc,
+			Endpoint: []*flight.FlightEndpoint{{
+				Ticket: &flight.Ticket{Ticket: []byte(query)},
+			}},
+			TotalRecords: -1,
+			TotalBytes:   -1,
+		}, nil
+	}
+
+	// For DQL statements, get flight info from the query handler
 	info, err := s.queryHandler.GetFlightInfo(ctx, query)
 	if err != nil {
 		s.metrics.IncrementCounter("flight_errors", "method", "GetFlightInfoStatement")
@@ -332,7 +356,48 @@ func (s *FlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.S
 		Str("query", query).
 		Msg("DoGetStatement: executing query")
 
-	// Execute the query and stream results
+	// Check if this is an update statement (DDL/DML)
+	if s.queryHandler.IsUpdateStatement(query) {
+		// For update statements, execute the update and return the row count as a result set
+		s.logger.Debug().
+			Str("query", query).
+			Msg("DoGetStatement: executing update statement")
+
+		rowsAffected, err := s.queryHandler.ExecuteUpdate(ctx, query, "")
+		if err != nil {
+			s.metrics.IncrementCounter("flight_errors", "method", "DoGetStatement", "error", "update_failed")
+			return nil, nil, err
+		}
+
+		// Create a schema for the update count result
+		updateSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "rows_affected", Type: arrow.PrimitiveTypes.Int64},
+		}, nil)
+
+		// Create a record with the row count
+		builder := array.NewRecordBuilder(s.allocator, updateSchema)
+		defer builder.Release()
+
+		int64Builder := builder.Field(0).(*array.Int64Builder)
+		int64Builder.Append(rowsAffected)
+
+		record := builder.NewRecord()
+		defer record.Release()
+
+		// Create a channel with the single result record
+		resultChan := make(chan flight.StreamChunk, 1)
+		resultChan <- flight.StreamChunk{Data: record}
+		close(resultChan)
+
+		s.logger.Info().
+			Str("query", query).
+			Int64("rows_affected", rowsAffected).
+			Msg("DoGetStatement: update statement executed successfully")
+
+		return updateSchema, resultChan, nil
+	}
+
+	// For DQL statements, execute the query and stream results
 	return s.queryHandler.ExecuteStatement(ctx, query, "")
 }
 

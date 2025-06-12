@@ -260,11 +260,12 @@ flowchart LR
 - **Streaming Extracts:** Pipe result sets directly into Arrow Flight streams for ML features.
 - **Embedded Mode:** Link the library, embed DuckDB, and expose Flight in‑process.
 
----
 
 ## 📄 License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
 
 ## 🛠️ Development
 
@@ -369,63 +370,3 @@ Or using Make:
 ```bash
 make benchmark
 ```
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests and linting
-5. Submit a pull request
-
-### Debugging
-
-Enable debug logging in config.yaml:
-
-```yaml
-logging:
-  level: "debug"
-  format: "json"
-```
-
-Enable tracing:
-
-```yaml
-tracing:
-  enabled: true
-  endpoint: "localhost:4317"
-```
-
-### Common Issues
-
-1. **Port already in use**: Change the port in config.yaml
-2. **DuckDB connection issues**: Check DSN in config.yaml
-3. **Authentication failures**: Verify auth configuration
-
-### IDE Setup
-
-#### VS Code
-
-Recommended extensions:
-
-- Go
-- Go Test Explorer
-- YAML
-- Docker
-
-#### GoLand
-
-Recommended plugins:
-
-- Go
-- YAML
-- Docker
-- Makefile
-
-### Release Process
-
-1. Update version in `VERSION` file
-2. Update CHANGELOG.md
-3. Create git tag
-4. Push to GitHub
-5. GitHub Actions will build and release
