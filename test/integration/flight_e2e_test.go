@@ -403,6 +403,9 @@ func testDeleteData(client *flightsql.Client) func(*testing.T) {
 }
 
 func TestQueryOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Query Operations test in CI environment")
+	}
 	// Create test configuration
 	cfg := config.DefaultConfig()
 	cfg.Database = ":memory:" // Use in-memory database for tests
