@@ -13,8 +13,8 @@ Hatch keeps DuckDB's magic small, open, and composable so your data can fly wher
 
 ---
 
-> This project is in early development. It may change, break, or evolve quickly. Contributions, ideas, and experiments are welcome.
-> For a producction ready implementation, see GizmoSQL (C++).
+> Note: Hatch is in early development—functional but evolving rapidly. Expect changes and occasional breakage. Contributions, ideas, and experiments are welcome.
+> For a production-ready implementation, see GizmoSQL (C++).
 
 ## 🙋 Why Hatch Exists
 
@@ -256,7 +256,7 @@ flowchart LR
 
 ## 📚 Usage Patterns
 
-- **Ad‑hoc Analytics:** Point Superset or Tableau at `grpc://host:32010` and run.
+- **Ad-hoc Analytics:** Point Superset or Tableau at `grpc://host:32010` and run.
 - **Streaming Extracts:** Pipe result sets directly into Arrow Flight streams for ML features.
 - **Embedded Mode:** Link the library, embed DuckDB, and expose Flight in‑process.
 

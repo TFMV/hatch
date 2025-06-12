@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -248,6 +247,17 @@ func setupLogging(level string) zerolog.Logger {
 	switch level {
 	case "debug":
 		logLevel = zerolog.DebugLevel
+		// Enable caller info for debug level
+		zerolog.CallerMarshalFunc = func(pc uintptr, file string, line int) string {
+			short := file
+			for i := len(file) - 1; i > 0; i-- {
+				if file[i] == '/' {
+					short = file[i+1:]
+					break
+				}
+			}
+			return fmt.Sprintf("%s:%d", short, line)
+		}
 	case "info":
 		logLevel = zerolog.InfoLevel
 	case "warn":
@@ -258,18 +268,18 @@ func setupLogging(level string) zerolog.Logger {
 		logLevel = zerolog.InfoLevel
 	}
 
-	// Create logger
+	// Create logger with caller info for debug level
 	logger := zerolog.New(os.Stdout).
 		Level(logLevel).
 		With().
 		Timestamp().
-		Str("service", "flight-sql-server").
-		Logger()
+		Str("service", "flight-sql-server")
 
-	// Set global logger
-	log.Logger = logger
+	if logLevel == zerolog.DebugLevel {
+		logger = logger.Caller()
+	}
 
-	return logger
+	return logger.Logger()
 }
 
 func setupGRPCServer(cfg *config.Config, srv *server.FlightSQLServer, logger zerolog.Logger) (*grpc.Server, error) {

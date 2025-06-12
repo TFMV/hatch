@@ -1,2 +1,0 @@
-pyarrow>=20.0.0
-pandas>=2.0.0

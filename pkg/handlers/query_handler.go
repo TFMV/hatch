@@ -86,7 +86,7 @@ func (h *queryHandler) ExecuteStatement(ctx context.Context, query string, trans
 		h.schemaCache.Put(schema)
 	}
 
-	// Create stream for results
+	// Create buffered channel for results
 	chunks := make(chan flight.StreamChunk, 16)
 
 	// Start streaming results in background
@@ -99,20 +99,13 @@ func (h *queryHandler) ExecuteStatement(ctx context.Context, query string, trans
 				continue
 			}
 
-			// Get a pooled record and copy data
-			pooled := h.recordPool.Get(record.Schema())
-			// TODO: Implement efficient data copy from record to pooled
-			// For now, just use the original record
-
 			select {
 			case <-ctx.Done():
 				h.logger.Warn("Query streaming cancelled", "records_sent", recordCount)
 				record.Release()
-				pooled.Release()
 				return
 			case chunks <- flight.StreamChunk{Data: record}:
 				recordCount++
-				pooled.Release() // Release the unused pooled record for now
 			}
 		}
 
@@ -163,8 +156,8 @@ func (h *queryHandler) ExecuteUpdate(ctx context.Context, query string, transact
 
 // GetFlightInfo returns flight information for a statement.
 func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flightpb.FlightInfo, error) {
-	ttimer := h.metrics.StartTimer("handler_get_flight_info")
-	defer ttimer.Stop()
+	timer := h.metrics.StartTimer("handler_get_flight_info")
+	defer timer.Stop()
 
 	h.logger.Debug("Getting flight info", "query", truncateQuery(query))
 
@@ -201,11 +194,13 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 		h.schemaCache.Put(schema)
 	}
 
-	// Create a FlightInfo with the schema
+	// Create a FlightInfo with the schema and encode the query in the ticket
 	return &flightpb.FlightInfo{
 		Schema: flight.SerializeSchema(schema, h.allocator),
 		Endpoint: []*flightpb.FlightEndpoint{{
-			Ticket: &flightpb.Ticket{},
+			Ticket: &flightpb.Ticket{
+				Ticket: []byte(query), // Encode the query in the ticket
+			},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
@@ -404,4 +399,22 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ExecuteFromTicket executes a query from a Flight ticket.
+func (h *queryHandler) ExecuteFromTicket(ctx context.Context, ticket []byte) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := h.metrics.StartTimer("handler_execute_from_ticket")
+	defer timer.Stop()
+
+	// Extract query from ticket
+	query := string(ticket)
+	if query == "" {
+		h.metrics.IncrementCounter("handler_empty_ticket")
+		return nil, nil, flightErrors.New(flightErrors.CodeInvalidRequest, "empty ticket")
+	}
+
+	h.logger.Debug("Executing query from ticket", "query", truncateQuery(query))
+
+	// Execute the query
+	return h.ExecuteStatement(ctx, query, "")
 }
