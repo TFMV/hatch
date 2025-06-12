@@ -8,13 +8,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/services"
 )
 
-// metadataHandler implements MetadataHandler interface.
+// MetadataHandler handles metadata-related operations.
 type metadataHandler struct {
 	metadataService services.MetadataService
 	allocator       memory.Allocator
@@ -441,37 +442,62 @@ func (h *metadataHandler) GetXdbcTypeInfo(ctx context.Context, dataType *int32) 
 	return schema, chunks, nil
 }
 
-// GetSqlInfo returns SQL server information.
+// GetSqlInfo returns SQL information.
 func (h *metadataHandler) GetSqlInfo(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	timer := h.metrics.StartTimer("handler_get_sql_info")
 	defer timer.Stop()
 
-	h.logger.Debug("Getting SQL info", "info_codes", info)
+	h.logger.Debug("Getting SQL info", "info_count", len(info))
 
-	sqlInfoList, err := h.metadataService.GetSQLInfo(ctx, info)
-	if err != nil {
-		h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_sql_info")
-		return nil, nil, fmt.Errorf("failed to get SQL info: %w", err)
+	// Create schema for SQL info
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "info_name", Type: arrow.PrimitiveTypes.Uint32},
+		{Name: "value", Type: arrow.PrimitiveTypes.Int32},
+	}, nil)
+
+	// Create builder for the record
+	builder := array.NewRecordBuilder(h.allocator, schema)
+	defer builder.Release()
+
+	infoNameBuilder := builder.Field(0).(*array.Uint32Builder)
+	valueBuilder := builder.Field(1).(*array.Int32Builder)
+
+	// Add SQL info values
+	for _, code := range info {
+		infoNameBuilder.Append(code)
+		switch flightsql.SqlInfo(code) {
+		case flightsql.SqlInfoFlightSqlServerName,
+			flightsql.SqlInfoFlightSqlServerVersion,
+			flightsql.SqlInfoFlightSqlServerArrowVersion,
+			flightsql.SqlInfoIdentifierQuoteChar:
+			valueBuilder.AppendNull() // String values will be added separately
+		case flightsql.SqlInfoQuotedIdentifierCase,
+			flightsql.SqlInfoIdentifierCase:
+			valueBuilder.Append(1) // Case sensitive
+		case flightsql.SqlInfoFlightSqlServerTransaction,
+			flightsql.SqlInfoFlightSqlServerCancel,
+			flightsql.SqlInfoFlightSqlServerStatementTimeout:
+			valueBuilder.Append(0) // Not supported
+		default:
+			valueBuilder.AppendNull() // Unknown info code
+		}
 	}
 
-	// Create Arrow schema for SQL info
-	schema := models.GetSqlInfoSchema()
+	// Create record
+	record := builder.NewRecord()
+	defer record.Release()
 
-	// Create stream for results
-	chunks := make(chan flight.StreamChunk, 1)
-
+	// Create channel for streaming
+	ch := make(chan flight.StreamChunk, 1)
 	go func() {
-		defer close(chunks)
-
-		sqlInfoResult := &models.SqlInfoResult{Info: sqlInfoList}
-		record := sqlInfoResult.ToArrowRecord(h.allocator)
-		chunks <- flight.StreamChunk{Data: record}
-
-		h.logger.Info("SQL info retrieved", "info_count", len(info))
-		h.metrics.RecordHistogram("handler_sql_info_count", float64(len(info)))
+		defer close(ch)
+		ch <- flight.StreamChunk{Data: record}
 	}()
 
-	return schema, chunks, nil
+	h.logger.Info("SQL info retrieved", "info_count", len(info))
+	h.metrics.IncrementCounter("handler_sql_info_retrieved")
+
+	return schema, ch, nil
 }
 
 // createForeignKeyRecord creates an Arrow record from foreign keys.

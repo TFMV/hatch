@@ -8,8 +8,9 @@ database:
   health_check_period: "30s"
 
 logging:
-  level: "info"
-  format: "json"
+  level: debug
+  format: json
+  output: stdout
 
 metrics:
   enabled: true

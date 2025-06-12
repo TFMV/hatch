@@ -21,18 +21,24 @@ type QueryHandler interface {
 
 	// ExecuteQueryAndStream executes a query and returns its schema and a channel of StreamChunks.
 	ExecuteQueryAndStream(ctx context.Context, query string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
+	// ExecuteFromTicket executes a query from a Flight ticket.
+	ExecuteFromTicket(ctx context.Context, ticket []byte) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
 
 // MetadataHandler handles metadata discovery operations.
 type MetadataHandler interface {
+	// GetSqlInfo returns SQL information.
+	GetSqlInfo(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
 	// GetCatalogs returns available catalogs.
 	GetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
 
+	// GetTables returns available tables.
+	GetTables(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
 	// GetSchemas returns schemas matching the filter.
 	GetSchemas(ctx context.Context, catalog *string, schemaPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
-
-	// GetTables returns tables matching the filter.
-	GetTables(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
 
 	// GetTableTypes returns available table types.
 	GetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
@@ -48,9 +54,6 @@ type MetadataHandler interface {
 
 	// GetXdbcTypeInfo returns XDBC type information.
 	GetXdbcTypeInfo(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error)
-
-	// GetSqlInfo returns SQL server information.
-	GetSqlInfo(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
 
 // TransactionHandler handles transaction operations.

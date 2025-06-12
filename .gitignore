@@ -29,3 +29,4 @@ gocheck_artifacts/
 Dockerfile
 .dockerignore
 data/
+python/
