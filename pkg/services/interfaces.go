@@ -14,6 +14,9 @@ type QueryService interface {
 	ExecuteQuery(ctx context.Context, req *models.QueryRequest) (*models.QueryResult, error)
 	ExecuteUpdate(ctx context.Context, req *models.UpdateRequest) (*models.UpdateResult, error)
 	ValidateQuery(ctx context.Context, query string) error
+	GetStatementType(query string) StatementType
+	IsUpdateStatement(query string) bool
+	IsQueryStatement(query string) bool
 }
 
 // MetadataService defines metadata operations.

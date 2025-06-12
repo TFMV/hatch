@@ -418,3 +418,13 @@ func (h *queryHandler) ExecuteFromTicket(ctx context.Context, ticket []byte) (*a
 	// Execute the query
 	return h.ExecuteStatement(ctx, query, "")
 }
+
+// IsUpdateStatement returns true if the statement should return an update count.
+func (h *queryHandler) IsUpdateStatement(query string) bool {
+	return h.queryService.IsUpdateStatement(query)
+}
+
+// IsQueryStatement returns true if the statement should return a result set.
+func (h *queryHandler) IsQueryStatement(query string) bool {
+	return h.queryService.IsQueryStatement(query)
+}

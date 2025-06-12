@@ -18,6 +18,7 @@ type queryService struct {
 	txnService TransactionService
 	logger     Logger
 	metrics    MetricsCollector
+	classifier *StatementClassifier
 }
 
 // NewQueryService creates a new query service.
@@ -32,6 +33,7 @@ func NewQueryService(
 		txnService: txnService,
 		logger:     logger,
 		metrics:    metrics,
+		classifier: NewStatementClassifier(),
 	}
 }
 
@@ -249,6 +251,21 @@ func (s *queryService) validateUpdateRequest(req *models.UpdateRequest) error {
 	}
 
 	return nil
+}
+
+// GetStatementType returns the type of a SQL statement.
+func (s *queryService) GetStatementType(query string) StatementType {
+	return s.classifier.ClassifyStatement(query)
+}
+
+// IsUpdateStatement returns true if the statement should return an update count.
+func (s *queryService) IsUpdateStatement(query string) bool {
+	return s.classifier.IsUpdateStatement(query)
+}
+
+// IsQueryStatement returns true if the statement should return a result set.
+func (s *queryService) IsQueryStatement(query string) bool {
+	return s.classifier.IsQueryStatement(query)
 }
 
 // wrapQueryError wraps database errors with appropriate error codes.

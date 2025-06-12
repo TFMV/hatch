@@ -24,6 +24,12 @@ type QueryHandler interface {
 
 	// ExecuteFromTicket executes a query from a Flight ticket.
 	ExecuteFromTicket(ctx context.Context, ticket []byte) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
+	// IsUpdateStatement returns true if the statement should return an update count.
+	IsUpdateStatement(query string) bool
+
+	// IsQueryStatement returns true if the statement should return a result set.
+	IsQueryStatement(query string) bool
 }
 
 // MetadataHandler handles metadata discovery operations.

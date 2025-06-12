@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,18 +27,46 @@ type Config struct {
 	ConnMaxIdleTime    time.Duration `json:"conn_max_idle_time"`
 	HealthCheckPeriod  time.Duration `json:"health_check_period"`
 	ConnectionTimeout  time.Duration `json:"connection_timeout"`
+
+	// Enterprise features
+	EnableCircuitBreaker    bool          `json:"enable_circuit_breaker"`
+	CircuitBreakerThreshold int           `json:"circuit_breaker_threshold"`
+	CircuitBreakerTimeout   time.Duration `json:"circuit_breaker_timeout"`
+	EnableConnectionRetry   bool          `json:"enable_connection_retry"`
+	MaxRetryAttempts        int           `json:"max_retry_attempts"`
+	RetryBackoffBase        time.Duration `json:"retry_backoff_base"`
+	EnableSlowQueryLogging  bool          `json:"enable_slow_query_logging"`
+	SlowQueryThreshold      time.Duration `json:"slow_query_threshold"`
+	EnableMetrics           bool          `json:"enable_metrics"`
+	MetricsNamespace        string        `json:"metrics_namespace"`
 }
 
 // ConnectionPool manages database connections.
 type ConnectionPool interface {
 	// Get returns a database connection.
 	Get(ctx context.Context) (*sql.DB, error)
+	// GetWithValidation returns a validated database connection.
+	GetWithValidation(ctx context.Context) (*EnterpriseConnection, error)
 	// Stats returns pool statistics.
 	Stats() PoolStats
+	// EnterpriseStats returns comprehensive enterprise statistics.
+	EnterpriseStats() EnterprisePoolStats
 	// HealthCheck performs a health check on the pool.
 	HealthCheck(ctx context.Context) error
 	// Close closes the connection pool.
 	Close() error
+	// SetMetricsCollector sets the metrics collector.
+	SetMetricsCollector(collector MetricsCollector)
+}
+
+// MetricsCollector interface for collecting pool metrics.
+type MetricsCollector interface {
+	RecordConnectionAcquisition(duration time.Duration)
+	RecordConnectionValidation(success bool, duration time.Duration)
+	RecordQueryExecution(query string, duration time.Duration, success bool)
+	UpdateActiveConnections(count int)
+	IncrementCircuitBreakerTrip()
+	IncrementRetryAttempt()
 }
 
 // PoolStats represents connection pool statistics.
@@ -50,6 +80,41 @@ type PoolStats struct {
 	MaxLifetimeClosed int64         `json:"max_lifetime_closed"`
 	LastHealthCheck   time.Time     `json:"last_health_check"`
 	HealthCheckStatus string        `json:"health_check_status"`
+}
+
+// EnterprisePoolStats provides comprehensive pool statistics.
+type EnterprisePoolStats struct {
+	PoolStats
+	CircuitBreakerState    string        `json:"circuit_breaker_state"`
+	CircuitBreakerFailures int64         `json:"circuit_breaker_failures"`
+	TotalRetryAttempts     int64         `json:"total_retry_attempts"`
+	SlowQueries            int64         `json:"slow_queries"`
+	ValidationFailures     int64         `json:"validation_failures"`
+	AverageAcquisitionTime time.Duration `json:"average_acquisition_time"`
+	PeakConnections        int           `json:"peak_connections"`
+	ConnectionErrors       int64         `json:"connection_errors"`
+}
+
+// CircuitBreakerState represents the state of the circuit breaker.
+type CircuitBreakerState int
+
+const (
+	CircuitBreakerClosed CircuitBreakerState = iota
+	CircuitBreakerOpen
+	CircuitBreakerHalfOpen
+)
+
+func (s CircuitBreakerState) String() string {
+	switch s {
+	case CircuitBreakerClosed:
+		return "closed"
+	case CircuitBreakerOpen:
+		return "open"
+	case CircuitBreakerHalfOpen:
+		return "half-open"
+	default:
+		return "unknown"
+	}
 }
 
 type connectionPool struct {
@@ -71,6 +136,356 @@ type connectionPool struct {
 	// Metrics
 	waitCount    atomic.Int64
 	waitDuration atomic.Int64
+
+	// Enterprise features
+	circuitBreaker      *CircuitBreaker
+	metricsCollector    MetricsCollector
+	enterpriseStats     *EnterpriseStats
+	connectionValidator *ConnectionValidator
+	queryLogger         *QueryLogger
+	mu                  sync.RWMutex
+}
+
+// CircuitBreaker implements the circuit breaker pattern for connection failures.
+type CircuitBreaker struct {
+	state           atomic.Int32 // CircuitBreakerState
+	failures        atomic.Int64
+	lastFailureTime atomic.Int64
+	threshold       int
+	timeout         time.Duration
+}
+
+// NewCircuitBreaker creates a new circuit breaker.
+func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		threshold: threshold,
+		timeout:   timeout,
+	}
+}
+
+// CanExecute checks if the circuit breaker allows execution.
+func (cb *CircuitBreaker) CanExecute() bool {
+	state := CircuitBreakerState(cb.state.Load())
+
+	switch state {
+	case CircuitBreakerClosed:
+		return true
+	case CircuitBreakerOpen:
+		// Check if timeout has passed
+		if time.Since(time.Unix(cb.lastFailureTime.Load(), 0)) > cb.timeout {
+			// Try to transition to half-open
+			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
+				return true
+			}
+		}
+		return false
+	case CircuitBreakerHalfOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// RecordSuccess records a successful operation.
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.failures.Store(0)
+	cb.state.Store(int32(CircuitBreakerClosed))
+}
+
+// RecordFailure records a failed operation.
+func (cb *CircuitBreaker) RecordFailure() {
+	failures := cb.failures.Add(1)
+	cb.lastFailureTime.Store(time.Now().Unix())
+
+	if failures >= int64(cb.threshold) {
+		cb.state.Store(int32(CircuitBreakerOpen))
+	}
+}
+
+// GetState returns the current circuit breaker state.
+func (cb *CircuitBreaker) GetState() CircuitBreakerState {
+	return CircuitBreakerState(cb.state.Load())
+}
+
+// GetFailures returns the current failure count.
+func (cb *CircuitBreaker) GetFailures() int64 {
+	return cb.failures.Load()
+}
+
+// EnterpriseStats tracks comprehensive statistics.
+type EnterpriseStats struct {
+	retryAttempts      atomic.Int64
+	slowQueries        atomic.Int64
+	validationFailures atomic.Int64
+	acquisitionTimes   []time.Duration
+	peakConnections    atomic.Int32
+	connectionErrors   atomic.Int64
+	mu                 sync.RWMutex
+}
+
+// NewEnterpriseStats creates new enterprise statistics tracker.
+func NewEnterpriseStats() *EnterpriseStats {
+	return &EnterpriseStats{
+		acquisitionTimes: make([]time.Duration, 0, 1000), // Ring buffer for last 1000 acquisitions
+	}
+}
+
+// RecordAcquisitionTime records connection acquisition time.
+func (es *EnterpriseStats) RecordAcquisitionTime(duration time.Duration) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+
+	// Maintain ring buffer
+	if len(es.acquisitionTimes) >= 1000 {
+		es.acquisitionTimes = es.acquisitionTimes[1:]
+	}
+	es.acquisitionTimes = append(es.acquisitionTimes, duration)
+}
+
+// GetAverageAcquisitionTime returns the average acquisition time.
+func (es *EnterpriseStats) GetAverageAcquisitionTime() time.Duration {
+	es.mu.RLock()
+	defer es.mu.RUnlock()
+
+	if len(es.acquisitionTimes) == 0 {
+		return 0
+	}
+
+	var total time.Duration
+	for _, t := range es.acquisitionTimes {
+		total += t
+	}
+
+	return total / time.Duration(len(es.acquisitionTimes))
+}
+
+// ConnectionValidator validates database connections.
+type ConnectionValidator struct {
+	logger zerolog.Logger
+	config Config
+}
+
+// NewConnectionValidator creates a new connection validator.
+func NewConnectionValidator(logger zerolog.Logger, config Config) *ConnectionValidator {
+	return &ConnectionValidator{
+		logger: logger,
+		config: config,
+	}
+}
+
+// ValidateConnection performs comprehensive connection validation.
+func (cv *ConnectionValidator) ValidateConnection(ctx context.Context, db *sql.DB) error {
+	start := time.Now()
+	defer func() {
+		cv.logger.Debug().
+			Dur("validation_duration", time.Since(start)).
+			Msg("Connection validation completed")
+	}()
+
+	// Basic ping test
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping failed: %w", err)
+	}
+
+	// Query test
+	var result int
+	if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&result); err != nil {
+		return fmt.Errorf("query test failed: %w", err)
+	}
+
+	if result != 1 {
+		return fmt.Errorf("query test returned unexpected result: %d", result)
+	}
+
+	// Transaction test
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("transaction begin failed: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %w", err)
+	}
+
+	return nil
+}
+
+// QueryLogger logs slow queries and query statistics.
+type QueryLogger struct {
+	logger    zerolog.Logger
+	threshold time.Duration
+	enabled   bool
+}
+
+// NewQueryLogger creates a new query logger.
+func NewQueryLogger(logger zerolog.Logger, threshold time.Duration, enabled bool) *QueryLogger {
+	return &QueryLogger{
+		logger:    logger,
+		threshold: threshold,
+		enabled:   enabled,
+	}
+}
+
+// LogQuery logs query execution details.
+func (ql *QueryLogger) LogQuery(query string, duration time.Duration, err error) {
+	if !ql.enabled {
+		return
+	}
+
+	logEvent := ql.logger.Debug()
+	if duration > ql.threshold {
+		logEvent = ql.logger.Warn().Bool("slow_query", true)
+	}
+
+	logEvent.
+		Dur("duration", duration).
+		Str("query", truncateQuery(query)).
+		Bool("success", err == nil).
+		Msg("Query executed")
+
+	if err != nil {
+		ql.logger.Error().
+			Err(err).
+			Str("query", truncateQuery(query)).
+			Msg("Query execution failed")
+	}
+}
+
+// EnterpriseConnection wraps a database connection with enterprise features.
+type EnterpriseConnection struct {
+	db              *sql.DB
+	pool            *connectionPool
+	logger          zerolog.Logger
+	validator       *ConnectionValidator
+	queryLogger     *QueryLogger
+	acquisitionTime time.Time
+}
+
+// NewEnterpriseConnection creates a new enterprise connection.
+func NewEnterpriseConnection(db *sql.DB, pool *connectionPool) *EnterpriseConnection {
+	return &EnterpriseConnection{
+		db:              db,
+		pool:            pool,
+		logger:          pool.logger,
+		validator:       pool.connectionValidator,
+		queryLogger:     pool.queryLogger,
+		acquisitionTime: time.Now(),
+	}
+}
+
+// Execute executes a query with enterprise features.
+func (ec *EnterpriseConnection) Execute(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return ec.executeWithRetry(ctx, func() (sql.Result, error) {
+		start := time.Now()
+		result, err := ec.db.ExecContext(ctx, query, args...)
+		duration := time.Since(start)
+
+		ec.queryLogger.LogQuery(query, duration, err)
+
+		if ec.pool.metricsCollector != nil {
+			ec.pool.metricsCollector.RecordQueryExecution(query, duration, err == nil)
+		}
+
+		if duration > ec.pool.config.SlowQueryThreshold {
+			ec.pool.enterpriseStats.slowQueries.Add(1)
+		}
+
+		if err != nil {
+			ec.pool.enterpriseStats.connectionErrors.Add(1)
+			return nil, pkgerrors.Wrap(err, pkgerrors.CodeQueryFailed, "query execution failed")
+		}
+
+		return result, nil
+	})
+}
+
+// Query executes a query and returns rows with enterprise features.
+func (ec *EnterpriseConnection) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	rows, err := ec.db.QueryContext(ctx, query, args...)
+	duration := time.Since(start)
+
+	ec.queryLogger.LogQuery(query, duration, err)
+
+	if ec.pool.metricsCollector != nil {
+		ec.pool.metricsCollector.RecordQueryExecution(query, duration, err == nil)
+	}
+
+	if duration > ec.pool.config.SlowQueryThreshold {
+		ec.pool.enterpriseStats.slowQueries.Add(1)
+	}
+
+	if err != nil {
+		ec.pool.enterpriseStats.connectionErrors.Add(1)
+		return nil, pkgerrors.Wrap(err, pkgerrors.CodeQueryFailed, "query execution failed")
+	}
+
+	return rows, nil
+}
+
+// executeWithRetry executes an operation with retry logic.
+func (ec *EnterpriseConnection) executeWithRetry(ctx context.Context, operation func() (sql.Result, error)) (sql.Result, error) {
+	if !ec.pool.config.EnableConnectionRetry {
+		return operation()
+	}
+
+	var lastErr error
+	backoff := ec.pool.config.RetryBackoffBase
+
+	for attempt := 0; attempt <= ec.pool.config.MaxRetryAttempts; attempt++ {
+		if attempt > 0 {
+			ec.pool.enterpriseStats.retryAttempts.Add(1)
+			if ec.pool.metricsCollector != nil {
+				ec.pool.metricsCollector.IncrementRetryAttempt()
+			}
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2 // Exponential backoff
+			}
+		}
+
+		result, err := operation()
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+
+		// Don't retry certain types of errors
+		if !isRetryableError(err) {
+			break
+		}
+	}
+
+	return nil, lastErr
+}
+
+// isRetryableError determines if an error is retryable.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+	retryablePatterns := []string{
+		"connection refused",
+		"connection reset",
+		"timeout",
+		"temporary failure",
+		"network",
+	}
+
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // New creates a new connection pool.
@@ -96,13 +511,32 @@ func New(cfg Config, logger zerolog.Logger) (ConnectionPool, error) {
 		cfg.ConnectionTimeout = 30 * time.Second
 	}
 
+	// Enterprise defaults
+	if cfg.CircuitBreakerThreshold <= 0 {
+		cfg.CircuitBreakerThreshold = 5
+	}
+	if cfg.CircuitBreakerTimeout <= 0 {
+		cfg.CircuitBreakerTimeout = 60 * time.Second
+	}
+	if cfg.MaxRetryAttempts <= 0 {
+		cfg.MaxRetryAttempts = 3
+	}
+	if cfg.RetryBackoffBase <= 0 {
+		cfg.RetryBackoffBase = 100 * time.Millisecond
+	}
+	if cfg.SlowQueryThreshold <= 0 {
+		cfg.SlowQueryThreshold = 1 * time.Second
+	}
+
 	logger.Info().
 		Str("dsn", maskDSN(cfg.DSN)).
 		Int("max_open", cfg.MaxOpenConnections).
 		Int("max_idle", cfg.MaxIdleConnections).
 		Dur("conn_lifetime", cfg.ConnMaxLifetime).
 		Dur("conn_idle_time", cfg.ConnMaxIdleTime).
-		Msg("Creating DuckDB connection pool")
+		Bool("circuit_breaker", cfg.EnableCircuitBreaker).
+		Bool("retry_enabled", cfg.EnableConnectionRetry).
+		Msg("Creating enterprise DuckDB connection pool")
 
 	db, err := sql.Open("duckdb", cfg.DSN)
 	if err != nil {
@@ -125,6 +559,15 @@ func New(cfg Config, logger zerolog.Logger) (ConnectionPool, error) {
 		cancel: cancel,
 	}
 
+	// Initialize enterprise features
+	if cfg.EnableCircuitBreaker {
+		pool.circuitBreaker = NewCircuitBreaker(cfg.CircuitBreakerThreshold, cfg.CircuitBreakerTimeout)
+	}
+
+	pool.enterpriseStats = NewEnterpriseStats()
+	pool.connectionValidator = NewConnectionValidator(logger, cfg)
+	pool.queryLogger = NewQueryLogger(logger, cfg.SlowQueryThreshold, cfg.EnableSlowQueryLogging)
+
 	// Initialize health status
 	pool.healthStatus.Store("unknown")
 
@@ -143,7 +586,7 @@ func New(cfg Config, logger zerolog.Logger) (ConnectionPool, error) {
 		go pool.healthCheckRoutine(ctx)
 	}
 
-	logger.Info().Msg("DuckDB connection pool created successfully")
+	logger.Info().Msg("Enterprise DuckDB connection pool created successfully")
 
 	return pool, nil
 }
@@ -154,20 +597,74 @@ func (p *connectionPool) Get(ctx context.Context) (*sql.DB, error) {
 		return nil, pkgerrors.New(pkgerrors.CodeUnavailable, "connection pool is closed")
 	}
 
+	// Check circuit breaker
+	if p.circuitBreaker != nil && !p.circuitBreaker.CanExecute() {
+		return nil, pkgerrors.New(pkgerrors.CodeUnavailable, "circuit breaker is open")
+	}
+
 	// Track wait time
 	start := time.Now()
 	p.waitCount.Add(1)
 	defer func() {
-		p.waitDuration.Add(int64(time.Since(start)))
+		duration := time.Since(start)
+		p.waitDuration.Add(int64(duration))
+		p.enterpriseStats.RecordAcquisitionTime(duration)
+
+		if p.metricsCollector != nil {
+			p.metricsCollector.RecordConnectionAcquisition(duration)
+		}
 	}()
 
 	// Verify connection is alive
 	if err := p.db.PingContext(ctx); err != nil {
 		p.logger.Error().Err(err).Msg("Database ping failed")
+
+		if p.circuitBreaker != nil {
+			p.circuitBreaker.RecordFailure()
+		}
+
 		return nil, pkgerrors.Wrap(err, pkgerrors.CodeConnectionFailed, "database connection failed")
 	}
 
+	if p.circuitBreaker != nil {
+		p.circuitBreaker.RecordSuccess()
+	}
+
+	// Update peak connections
+	stats := p.db.Stats()
+	if int32(stats.OpenConnections) > p.enterpriseStats.peakConnections.Load() {
+		p.enterpriseStats.peakConnections.Store(int32(stats.OpenConnections))
+	}
+
+	if p.metricsCollector != nil {
+		p.metricsCollector.UpdateActiveConnections(stats.OpenConnections)
+	}
+
 	return p.db, nil
+}
+
+// GetWithValidation returns a validated database connection.
+func (p *connectionPool) GetWithValidation(ctx context.Context) (*EnterpriseConnection, error) {
+	db, err := p.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate connection
+	start := time.Now()
+	validationErr := p.connectionValidator.ValidateConnection(ctx, db)
+	validationDuration := time.Since(start)
+
+	if p.metricsCollector != nil {
+		p.metricsCollector.RecordConnectionValidation(validationErr == nil, validationDuration)
+	}
+
+	if validationErr != nil {
+		p.enterpriseStats.validationFailures.Add(1)
+		return nil, pkgerrors.Wrap(validationErr, pkgerrors.CodeConnectionFailed, "connection validation failed")
+	}
+
+	return NewEnterpriseConnection(db, p), nil
 }
 
 // Stats returns pool statistics.
@@ -185,6 +682,35 @@ func (p *connectionPool) Stats() PoolStats {
 		LastHealthCheck:   time.Unix(p.lastHealthCheck.Load(), 0),
 		HealthCheckStatus: p.getHealthStatus(),
 	}
+}
+
+// EnterpriseStats returns comprehensive enterprise statistics.
+func (p *connectionPool) EnterpriseStats() EnterprisePoolStats {
+	stats := p.Stats()
+
+	enterpriseStats := EnterprisePoolStats{
+		PoolStats:              stats,
+		TotalRetryAttempts:     p.enterpriseStats.retryAttempts.Load(),
+		SlowQueries:            p.enterpriseStats.slowQueries.Load(),
+		ValidationFailures:     p.enterpriseStats.validationFailures.Load(),
+		AverageAcquisitionTime: p.enterpriseStats.GetAverageAcquisitionTime(),
+		PeakConnections:        int(p.enterpriseStats.peakConnections.Load()),
+		ConnectionErrors:       p.enterpriseStats.connectionErrors.Load(),
+	}
+
+	if p.circuitBreaker != nil {
+		enterpriseStats.CircuitBreakerState = p.circuitBreaker.GetState().String()
+		enterpriseStats.CircuitBreakerFailures = p.circuitBreaker.GetFailures()
+	}
+
+	return enterpriseStats
+}
+
+// SetMetricsCollector sets the metrics collector.
+func (p *connectionPool) SetMetricsCollector(collector MetricsCollector) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.metricsCollector = collector
 }
 
 // HealthCheck performs a health check on the pool.
@@ -217,7 +743,7 @@ func (p *connectionPool) Close() error {
 		return nil // Already closed
 	}
 
-	p.logger.Info().Msg("Closing DuckDB connection pool")
+	p.logger.Info().Msg("Closing enterprise DuckDB connection pool")
 
 	// Cancel the context to stop health check routine
 	p.cancel()
