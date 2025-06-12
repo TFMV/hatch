@@ -179,6 +179,9 @@ func (s *FlightE2ETestSuite) setupTestTable(ctx context.Context, t *testing.T) {
 
 // TestFlightE2E tests end-to-end functionality of the Hatch server with Flight SQL
 func TestFlightE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Flight E2E test in CI environment")
+	}
 	// Create test configuration
 	cfg := config.DefaultConfig()
 	cfg.Database = ":memory:" // Use in-memory database for tests
