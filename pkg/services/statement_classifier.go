@@ -882,3 +882,4 @@ func NewStatementClassifier() *EnterpriseStatementClassifier {
 
 // StatementClassifier type alias for backward compatibility.
 type StatementClassifier = EnterpriseStatementClassifier
+ 

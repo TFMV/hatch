@@ -267,6 +267,29 @@ func (a *actionEndTransactionRequest) GetTransactionId() []byte {
 	return a.transactionID
 }
 
+// statementQueryTicket implements flightsql.StatementQueryTicket
+type statementQueryTicket struct {
+	handle []byte
+}
+
+func (s *statementQueryTicket) GetStatementHandle() []byte {
+	return s.handle
+}
+
+// actionCreatePreparedStatementRequest implements flightsql.ActionCreatePreparedStatementRequest
+type actionCreatePreparedStatementRequest struct {
+	query         string
+	transactionID []byte
+}
+
+func (a *actionCreatePreparedStatementRequest) GetQuery() string {
+	return a.query
+}
+
+func (a *actionCreatePreparedStatementRequest) GetTransactionId() []byte {
+	return a.transactionID
+}
+
 func TestGetFlightInfoStatement(t *testing.T) {
 	server, queryHandler, _, _, _ := setupTestServer(t)
 
@@ -283,7 +306,7 @@ func TestGetFlightInfoStatement(t *testing.T) {
 
 		// Test
 		stmtQuery := &statementQuery{query: "SELECT * FROM test"}
-		info, err := server.GetFlightInfoStatement(context.Background(), stmtQuery)
+		info, err := server.GetFlightInfoStatement(context.Background(), stmtQuery, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, info)
 		assert.NotNil(t, info.Schema)
@@ -291,7 +314,7 @@ func TestGetFlightInfoStatement(t *testing.T) {
 
 	t.Run("cache hit", func(t *testing.T) {
 		// Setup mock cache
-		server.cache = &mockCache{
+		server.memoryCache = &mockCache{
 			getFunc: func(ctx context.Context, key string) (arrow.Record, error) {
 				schema := arrow.NewSchema([]arrow.Field{
 					{Name: "id", Type: arrow.PrimitiveTypes.Int64},
@@ -304,7 +327,7 @@ func TestGetFlightInfoStatement(t *testing.T) {
 
 		// Test
 		stmtQuery := &statementQuery{query: "SELECT * FROM test"}
-		info, err := server.GetFlightInfoStatement(context.Background(), stmtQuery)
+		info, err := server.GetFlightInfoStatement(context.Background(), stmtQuery, nil)
 		require.NoError(t, err)
 		assert.NotNil(t, info)
 		assert.NotNil(t, info.Schema)
@@ -329,7 +352,9 @@ func TestDoGetStatement(t *testing.T) {
 
 		// Test
 		stmtQuery := &statementQuery{query: "SELECT * FROM test"}
-		schema, chunks, err := server.DoGetStatement(context.Background(), stmtQuery)
+		schema, chunks, err := server.DoGetStatement(context.Background(), &statementQueryTicket{
+			handle: []byte(stmtQuery.query),
+		})
 		require.NoError(t, err)
 		assert.NotNil(t, schema)
 		assert.NotNil(t, chunks)
@@ -349,7 +374,7 @@ func TestDoGetStatement(t *testing.T) {
 		record := array.NewRecord(schema, nil, 0)
 		defer record.Release()
 
-		server.cache = &mockCache{
+		server.memoryCache = &mockCache{
 			getFunc: func(ctx context.Context, key string) (arrow.Record, error) {
 				return record, nil
 			},
@@ -357,7 +382,9 @@ func TestDoGetStatement(t *testing.T) {
 
 		// Test
 		stmtQuery := &statementQuery{query: "SELECT * FROM test"}
-		schema, chunks, err := server.DoGetStatement(context.Background(), stmtQuery)
+		schema, chunks, err := server.DoGetStatement(context.Background(), &statementQueryTicket{
+			handle: []byte(stmtQuery.query),
+		})
 		require.NoError(t, err)
 		assert.NotNil(t, schema)
 		assert.NotNil(t, chunks)
@@ -529,5 +556,84 @@ func TestEndTransaction(t *testing.T) {
 		}
 		err := server.EndTransaction(context.Background(), req)
 		assert.Error(t, err)
+	})
+}
+
+func TestCreatePreparedStatement(t *testing.T) {
+	server, _, _, _, preparedStatementHandler := setupTestServer(t)
+
+	t.Run("successful creation - SELECT query", func(t *testing.T) {
+		// Setup mock response
+		expectedHandle := "stmt-123"
+		expectedSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "name", Type: arrow.BinaryTypes.String},
+		}, nil)
+
+		preparedStatementHandler.createFunc = func(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error) {
+			assert.Equal(t, "SELECT * FROM users WHERE id = ?", query)
+			assert.Equal(t, "txn-1", txnID)
+			return expectedHandle, expectedSchema, nil
+		}
+
+		// Test
+		req := &actionCreatePreparedStatementRequest{
+			query:         "SELECT * FROM users WHERE id = ?",
+			transactionID: []byte("txn-1"),
+		}
+		result, err := server.CreatePreparedStatement(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(expectedHandle), result.Handle)
+		assert.NotNil(t, result.DatasetSchema)
+	})
+
+	t.Run("successful creation - INSERT query", func(t *testing.T) {
+		// Setup mock response
+		expectedHandle := "stmt-456"
+		expectedSchema := arrow.NewSchema([]arrow.Field{
+			{Name: "affected_rows", Type: arrow.PrimitiveTypes.Int64},
+		}, nil)
+
+		preparedStatementHandler.createFunc = func(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error) {
+			assert.Equal(t, "INSERT INTO users (name, age) VALUES (?, ?)", query)
+			assert.Empty(t, txnID)
+			return expectedHandle, expectedSchema, nil
+		}
+
+		// Test
+		req := &actionCreatePreparedStatementRequest{
+			query: "INSERT INTO users (name, age) VALUES (?, ?)",
+		}
+		result, err := server.CreatePreparedStatement(context.Background(), req)
+		require.NoError(t, err)
+		assert.Equal(t, []byte(expectedHandle), result.Handle)
+		assert.NotNil(t, result.DatasetSchema)
+	})
+
+	t.Run("error - invalid query", func(t *testing.T) {
+		// Setup mock response
+		preparedStatementHandler.createFunc = func(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error) {
+			return "", nil, assert.AnError
+		}
+
+		// Test
+		req := &actionCreatePreparedStatementRequest{
+			query: "INVALID SQL",
+		}
+		result, err := server.CreatePreparedStatement(context.Background(), req)
+		assert.Error(t, err)
+		assert.Empty(t, result.Handle)
+		assert.Nil(t, result.DatasetSchema)
+	})
+
+	t.Run("error - empty query", func(t *testing.T) {
+		// Test
+		req := &actionCreatePreparedStatementRequest{
+			query: "",
+		}
+		result, err := server.CreatePreparedStatement(context.Background(), req)
+		assert.Error(t, err)
+		assert.Empty(t, result.Handle)
+		assert.Nil(t, result.DatasetSchema)
 	})
 }
