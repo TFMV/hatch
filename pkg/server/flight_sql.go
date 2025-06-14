@@ -3,21 +3,51 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
-	"github.com/apache/arrow-go/v18/arrow/memory"
+	arrowmemory "github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/hatch/cmd/server/middleware"
 	"github.com/TFMV/hatch/pkg/cache"
 	"github.com/TFMV/hatch/pkg/handlers"
-	"github.com/TFMV/hatch/pkg/infrastructure/converter"
-	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
 	"github.com/TFMV/hatch/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/services"
 )
+
+//───────────────────────────────────
+// Types and Interfaces
+//───────────────────────────────────
+
+// Session represents a client session.
+type Session struct {
+	ID            string
+	User          string
+	TransactionID string
+	Properties    map[string]interface{}
+}
+
+// MetricsCollector defines the metrics interface.
+type MetricsCollector interface {
+	IncrementCounter(name string, labels ...string)
+	RecordHistogram(name string, value float64, labels ...string)
+	RecordGauge(name string, value float64, labels ...string)
+	StartTimer(name string) Timer
+}
+
+// Timer represents a timing measurement.
+type Timer interface {
+	Stop() float64
+}
 
 //───────────────────────────────────
 // FlightSQLServer
@@ -25,34 +55,119 @@ import (
 
 // FlightSQLServer implements the Flight SQL protocol.
 type FlightSQLServer struct {
-	flight.BaseFlightServer
+	flightsql.BaseServer
 
+	// Configuration
+	config *config.Config
+
+	// Core components
+	pool        pool.ConnectionPool
+	allocator   arrowmemory.Allocator
+	logger      zerolog.Logger
+	metrics     MetricsCollector
+	memoryCache cache.Cache
+	cacheKeyGen cache.CacheKeyGenerator
+
+	// Object pools
+	byteBufferPool    *pool.ByteBufferPool
+	recordBuilderPool *pool.RecordBuilderPool
+
+	// Handlers
 	queryHandler             handlers.QueryHandler
 	metadataHandler          handlers.MetadataHandler
 	transactionHandler       handlers.TransactionHandler
 	preparedStatementHandler handlers.PreparedStatementHandler
 
-	pool      pool.ConnectionPool
-	converter converter.TypeConverter
-	alloc     memory.Allocator
-	cache     cache.Cache
-	keyGen    cache.CacheKeyGenerator
-	metrics   metrics.Collector
-	log       zerolog.Logger
+	// Services
+	transactionService services.TransactionService
+
+	// State
+	mu       sync.RWMutex
+	sessions map[string]*Session
+	closing  bool
+
+	// OAuth2 components
+	authMiddleware *middleware.AuthMiddleware
+	httpServer     *http.Server
 }
 
-// NewFlightSQLServer wires up all dependencies.
+// New creates a new Flight SQL server (placeholder - use NewFlightSQLServer for now).
+func New(cfg *config.Config, logger zerolog.Logger, metrics MetricsCollector) (*FlightSQLServer, error) {
+	return nil, fmt.Errorf("use NewFlightSQLServer constructor instead")
+}
+
+// Register registers the Flight SQL server with a gRPC server.
+func (s *FlightSQLServer) Register(grpcServer *grpc.Server) {
+	// Create a Flight SQL server that properly handles SQL commands
+	flightServer := flightsql.NewFlightServer(s)
+	flight.RegisterFlightServiceServer(grpcServer, flightServer)
+}
+
+// GetMiddleware returns gRPC middleware for the server.
+func (s *FlightSQLServer) GetMiddleware() []grpc.ServerOption {
+	var opts []grpc.ServerOption
+	// TODO: Add middleware implementation
+	return opts
+}
+
+// Close gracefully shuts down the server.
+func (s *FlightSQLServer) Close(ctx context.Context) error {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+
+	s.logger.Info().Msg("Closing Flight SQL server")
+
+	// Stop OAuth2 HTTP server if running
+	if s.httpServer != nil {
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			s.logger.Error().Err(err).Msg("Error shutting down OAuth2 HTTP server")
+		}
+	}
+
+	// Stop transaction service if it has a Stop method
+	if stopper, ok := s.transactionService.(interface{ Stop() }); ok {
+		stopper.Stop()
+	}
+
+	// Close cache
+	if err := s.memoryCache.Close(); err != nil {
+		s.logger.Error().Err(err).Msg("Error closing cache")
+	}
+
+	// Close connection pool
+	if err := s.pool.Close(); err != nil {
+		s.logger.Error().Err(err).Msg("Error closing connection pool")
+	}
+
+	s.logger.Info().Msg("Flight SQL server closed")
+	return nil
+}
+
+// orEmpty returns an empty string if the pointer is nil, otherwise the pointed value
+func orEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+//───────────────────────────────────
+// Query helpers (deprecated - keeping for compatibility)
+//───────────────────────────────────
+
+// NewFlightSQLServer wires up all dependencies (deprecated - use New instead).
 func NewFlightSQLServer(
 	qh handlers.QueryHandler,
 	mh handlers.MetadataHandler,
 	th handlers.TransactionHandler,
 	ph handlers.PreparedStatementHandler,
 	p pool.ConnectionPool,
-	conv converter.TypeConverter,
-	alloc memory.Allocator,
+	conv interface{}, // converter.TypeConverter - keeping for compatibility
+	alloc arrowmemory.Allocator,
 	c cache.Cache,
 	kg cache.CacheKeyGenerator,
-	m metrics.Collector,
+	m interface{}, // metrics.Collector - keeping for compatibility
 	lg zerolog.Logger,
 ) *FlightSQLServer {
 	return &FlightSQLServer{
@@ -60,20 +175,14 @@ func NewFlightSQLServer(
 		metadataHandler:          mh,
 		transactionHandler:       th,
 		preparedStatementHandler: ph,
-
-		pool:      p,
-		converter: conv,
-		alloc:     alloc,
-		cache:     c,
-		keyGen:    kg,
-		metrics:   m,
-		log:       lg.With().Str("component", "server").Logger(),
+		pool:                     p,
+		allocator:                alloc,
+		memoryCache:              c,
+		cacheKeyGen:              kg,
+		logger:                   lg.With().Str("component", "server").Logger(),
+		sessions:                 make(map[string]*Session),
 	}
 }
-
-//───────────────────────────────────
-// Query helpers
-//───────────────────────────────────
 
 // infoFromSchema creates a FlightInfo from a query and schema.
 func (s *FlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *flight.FlightInfo {
@@ -82,7 +191,7 @@ func (s *FlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *fl
 		Cmd:  []byte(query),
 	}
 	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.alloc),
+		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
 			Ticket: &flight.Ticket{Ticket: desc.Cmd},
@@ -95,7 +204,7 @@ func (s *FlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *fl
 // infoStatic creates a FlightInfo for static metadata endpoints.
 func (s *FlightSQLServer) infoStatic(desc *flight.FlightDescriptor, schema *arrow.Schema) *flight.FlightInfo {
 	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.alloc),
+		Schema:           flight.SerializeSchema(schema, s.allocator),
 		FlightDescriptor: desc,
 		Endpoint: []*flight.FlightEndpoint{{
 			Ticket: &flight.Ticket{Ticket: desc.Cmd},
@@ -105,14 +214,19 @@ func (s *FlightSQLServer) infoStatic(desc *flight.FlightDescriptor, schema *arro
 	}
 }
 
+//───────────────────────────────────
+// Query helpers
+//───────────────────────────────────
+
 // GetFlightInfoStatement handles "planning" a query.
 func (s *FlightSQLServer) GetFlightInfoStatement(
 	ctx context.Context,
 	cmd flightsql.StatementQuery,
+	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	key := s.keyGen.GenerateKey(cmd.GetQuery(), nil)
+	key := s.cacheKeyGen.GenerateKey(cmd.GetQuery(), nil)
 
-	if rec, _ := s.cache.Get(ctx, key); rec != nil {
+	if rec, _ := s.memoryCache.Get(ctx, key); rec != nil {
 		return s.infoFromSchema(cmd.GetQuery(), rec.Schema()), nil
 	}
 
@@ -122,12 +236,12 @@ func (s *FlightSQLServer) GetFlightInfoStatement(
 // DoGetStatement streams the query results, with a fast path to the cache.
 func (s *FlightSQLServer) DoGetStatement(
 	ctx context.Context,
-	cmd flightsql.StatementQuery,
+	ticket flightsql.StatementQueryTicket,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	key := s.keyGen.GenerateKey(cmd.GetQuery(), nil)
+	key := s.cacheKeyGen.GenerateKey(string(ticket.GetStatementHandle()), nil)
 
 	// ── cache hit ───────────────────────────────────────────────
-	if rec, _ := s.cache.Get(ctx, key); rec != nil {
+	if rec, _ := s.memoryCache.Get(ctx, key); rec != nil {
 		ch := make(chan flight.StreamChunk, 1)
 		ch <- flight.StreamChunk{Data: rec}
 		close(ch)
@@ -135,7 +249,7 @@ func (s *FlightSQLServer) DoGetStatement(
 	}
 
 	// ── cache miss: ask handler ─────────────────────────────────
-	schema, upstream, err := s.queryHandler.ExecuteStatement(ctx, cmd.GetQuery(), "")
+	schema, upstream, err := s.queryHandler.ExecuteStatement(ctx, string(ticket.GetStatementHandle()), "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -147,7 +261,7 @@ func (s *FlightSQLServer) DoGetStatement(
 		first := true
 		for c := range upstream {
 			if first && c.Data != nil {
-				_ = s.cache.Put(ctx, key, c.Data)
+				_ = s.memoryCache.Put(ctx, key, c.Data)
 				first = false
 			}
 			down <- c
@@ -441,17 +555,18 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementQuery,
 	reader flight.MessageReader,
-) error {
+	writer flight.MetadataWriter,
+) ([]byte, error) {
 	record, err := reader.Read()
 	if err != nil {
-		return status.Errorf(codes.Internal, "read params: %v", err)
+		return nil, status.Errorf(codes.Internal, "read params: %v", err)
 	}
 	defer record.Release()
 
 	if err := s.preparedStatementHandler.SetParameters(ctx, string(cmd.GetPreparedStatementHandle()), record); err != nil {
-		return status.Errorf(codes.Internal, "set ps params: %v", err)
+		return nil, status.Errorf(codes.Internal, "set ps params: %v", err)
 	}
-	return nil
+	return []byte(cmd.GetPreparedStatementHandle()), nil
 }
 
 func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
@@ -470,4 +585,51 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 		return 0, status.Errorf(codes.Internal, "execute ps update: %v", err)
 	}
 	return affected, nil
+}
+
+// registerSqlInfo registers SQL info with the base server.
+func (s *FlightSQLServer) registerSqlInfo() error {
+	// Server info
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerName, "DuckDB Flight SQL Server"); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerVersion, "1.0.0"); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerArrowVersion, "18.0.0"); err != nil {
+		return err
+	}
+
+	// SQL language support
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLCatalog, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLSchema, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLTable, true); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoIdentifierCase, int32(1)); err != nil { // Case sensitive
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoQuotedIdentifierCase, int32(1)); err != nil { // Case sensitive
+		return err
+	}
+
+	// Transaction support
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransaction, int32(0)); err != nil { // Transactions supported
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerCancel, false); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerStatementTimeout, int32(0)); err != nil {
+		return err
+	}
+	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransactionTimeout, int32(0)); err != nil {
+		return err
+	}
+
+	return nil
 }
