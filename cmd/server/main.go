@@ -18,11 +18,13 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
 	"github.com/TFMV/hatch/cmd/server/config"
 	"github.com/TFMV/hatch/pkg/cache"
@@ -30,6 +32,7 @@ import (
 	"github.com/TFMV/hatch/pkg/infrastructure"
 	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
 	"github.com/TFMV/hatch/pkg/infrastructure/pool"
+	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/repositories/duckdb"
 	"github.com/TFMV/hatch/pkg/services"
 
@@ -568,6 +571,26 @@ func (s *EnterpriseFlightSQLServer) GetFlightInfoStatement(ctx context.Context, 
 	}
 
 	return s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
+}
+
+func (s *EnterpriseFlightSQLServer) BeginTransaction(ctx context.Context, req flightsql.ActionBeginTransactionRequest) ([]byte, error) {
+	timer := s.metrics.StartTimer("flight_begin_transaction")
+	defer timer.Stop()
+
+	// Extract options from request
+	opts := models.TransactionOptions{
+		ReadOnly: false, // Default to read-write
+	}
+
+	// Begin transaction
+	txnID, err := s.transactionHandler.Begin(ctx, opts.ReadOnly)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to begin transaction")
+		return nil, status.Errorf(codes.Internal, "begin transaction: %v", err)
+	}
+
+	s.logger.Info().Str("transaction_id", txnID).Msg("Transaction started")
+	return []byte(txnID), nil
 }
 
 func (s *EnterpriseFlightSQLServer) DoGetStatement(ctx context.Context, ticket flightsql.StatementQueryTicket) (*arrow.Schema, <-chan flight.StreamChunk, error) {
