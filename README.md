@@ -13,8 +13,13 @@ Hatch keeps DuckDB's magic small, open, and composable so your data can fly wher
 
 ---
 
-> Note: Hatch is in early development—partially functional and evolving rapidly. Expect changes and occasional breakage. Contributions, ideas, and experiments are welcome.
-> For a production-ready implementation, see GizmoSQL (C++).
+⚠️  Hatch is under active development.
+It is **not yet ready use**
+
+Please note that the AUR package is community-maintained (AlphaJack), and I may not be able to support issues that arise from that setup.
+
+For a stable implementation, see GizmoSQL:
+👉 <https://github.com/gizmodata/gizmosql>
 
 ## 🙋 Why Hatch Exists
 
