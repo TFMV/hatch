@@ -375,6 +375,13 @@ func (s *preparedStatementService) SetParameters(ctx context.Context, handle str
 		return err // Get already logs and increments metrics
 	}
 
+	if stmt.ParameterSchema != nil && len(params) > 0 {
+		expected := len(stmt.ParameterSchema.Fields())
+		if len(params[0]) != expected {
+			return errors.New(errors.CodeInvalidRequest, fmt.Sprintf("parameter count mismatch: expected %d got %d", expected, len(params[0])))
+		}
+	}
+
 	// Store parameters in the statement model (or call repository to update if needed)
 	// This depends on how the repository and model are designed to handle parameter binding.
 	// For this example, let's assume the PreparedStatement model can hold the bound parameters.
