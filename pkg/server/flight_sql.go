@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/apache/arrow-go/v18/arrow/array"
+
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
@@ -532,12 +534,20 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	reader flight.MessageReader,
 	writer flight.MetadataWriter,
 ) ([]byte, error) {
-	var params arrow.Record
+	var (
+		builder *array.RecordBuilder
+		params  arrow.Record
+		schema  *arrow.Schema
+	)
+
 	for {
 		rec, err := reader.Read()
 		if err != nil {
 			if err == io.EOF {
 				break
+			}
+			if builder != nil {
+				builder.Release()
 			}
 			if params != nil {
 				params.Release()
@@ -547,12 +557,27 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 		if rec == nil {
 			continue
 		}
-		if params == nil {
-			params = rec
-		} else {
-			// TODO: support multiple parameter batches
-			rec.Release()
+		if builder == nil {
+			schema = rec.Schema()
+			builder = array.NewRecordBuilder(s.allocator, schema)
 		}
+		if !rec.Schema().Equal(schema) {
+			rec.Release()
+			builder.Release()
+			if params != nil {
+				params.Release()
+			}
+			return nil, status.Errorf(codes.InvalidArgument, "parameter batch schema mismatch")
+		}
+		for i := range rec.Columns() {
+			builder.Field(i).AppendArray(rec.Column(i))
+		}
+		rec.Release()
+	}
+
+	if builder != nil {
+		params = builder.NewRecord()
+		builder.Release()
 	}
 
 	if params != nil {
@@ -570,12 +595,20 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 	cmd flightsql.PreparedStatementUpdate,
 	reader flight.MessageReader,
 ) (int64, error) {
-	var params arrow.Record
+	var (
+		builder *array.RecordBuilder
+		params  arrow.Record
+		schema  *arrow.Schema
+	)
+
 	for {
 		rec, err := reader.Read()
 		if err != nil {
 			if err == io.EOF {
 				break
+			}
+			if builder != nil {
+				builder.Release()
 			}
 			if params != nil {
 				params.Release()
@@ -585,12 +618,27 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 		if rec == nil {
 			continue
 		}
-		if params == nil {
-			params = rec
-		} else {
-			// TODO: support multiple parameter batches
-			rec.Release()
+		if builder == nil {
+			schema = rec.Schema()
+			builder = array.NewRecordBuilder(s.allocator, schema)
 		}
+		if !rec.Schema().Equal(schema) {
+			rec.Release()
+			builder.Release()
+			if params != nil {
+				params.Release()
+			}
+			return 0, status.Errorf(codes.InvalidArgument, "parameter batch schema mismatch")
+		}
+		for i := range rec.Columns() {
+			builder.Field(i).AppendArray(rec.Column(i))
+		}
+		rec.Release()
+	}
+
+	if builder != nil {
+		params = builder.NewRecord()
+		builder.Release()
 	}
 
 	if params != nil {
