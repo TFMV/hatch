@@ -148,17 +148,60 @@ WHERE  table_name = ?`)
 }
 
 // Foreign‑key helpers below remain unimplemented in DuckDB.
-func (*metadataRepository) GetPrimaryKeys(context.Context, models.TableRef) ([]models.Key, error) {
-	return nil, nil
+func (r *metadataRepository) GetPrimaryKeys(ctx context.Context, ref models.TableRef) ([]models.Key, error) {
+	// TODO: query catalog tables once DuckDB exposes primary key metadata
+	tbl := ref.Table
+	if s := strPtr(ref.DBSchema); s != "" {
+		tbl = fmt.Sprintf("%s.%s", s, tbl)
+	}
+
+	const q = `SELECT name, pk FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk`
+
+	db, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, q, tbl)
+	if err != nil {
+		return nil, r.wrapDBErr(err, q)
+	}
+	defer rows.Close()
+
+	out := make([]models.Key, 0)
+	catalog := strPtr(ref.Catalog)
+	schema := strPtr(ref.DBSchema)
+
+	for rows.Next() {
+		var name string
+		var seq int32
+		if err := rows.Scan(&name, &seq); err != nil {
+			return nil, err
+		}
+		out = append(out, models.Key{
+			CatalogName: catalog,
+			SchemaName:  schema,
+			TableName:   ref.Table,
+			ColumnName:  name,
+			KeySequence: seq,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 func (*metadataRepository) GetImportedKeys(context.Context, models.TableRef) ([]models.ForeignKey, error) {
-	return nil, nil
+	// TODO: implement foreign key introspection once supported by DuckDB
+	return []models.ForeignKey{}, nil
 }
 func (*metadataRepository) GetExportedKeys(context.Context, models.TableRef) ([]models.ForeignKey, error) {
-	return nil, nil
+	// TODO: implement foreign key introspection once supported by DuckDB
+	return []models.ForeignKey{}, nil
 }
 func (*metadataRepository) GetCrossReference(context.Context, models.CrossTableRef) ([]models.ForeignKey, error) {
-	return nil, nil
+	// TODO: implement foreign key introspection once supported by DuckDB
+	return []models.ForeignKey{}, nil
 }
 
 func (r *metadataRepository) GetTypeInfo(ctx context.Context, dataType *int32) ([]models.XdbcTypeInfo, error) {
