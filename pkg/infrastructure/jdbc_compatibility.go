@@ -348,7 +348,7 @@ func (p *EnhancedSQLInfoProvider) initializeEnhancedSQLInfo() {
 	p.sqlInfo[uint32(flightsql.SqlInfoDDLCatalog)] = true
 	p.sqlInfo[uint32(flightsql.SqlInfoDDLSchema)] = true
 	p.sqlInfo[uint32(flightsql.SqlInfoDDLTable)] = true
-	p.sqlInfo[uint32(flightsql.SqlInfoAllTablesAreASelectable)] = true
+	p.sqlInfo[uint32(flightsql.SqlInfoAllTablesAreSelectable)] = true
 	p.sqlInfo[uint32(flightsql.SqlInfoTransactionsSupported)] = true
 
 	// JDBC-specific features (using available constants)
