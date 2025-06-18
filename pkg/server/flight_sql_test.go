@@ -44,6 +44,7 @@ type mockMetadataHandler struct {
 	getCatalogsFunc    func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
 	getSchemasFunc     func(ctx context.Context, catalog *string, schemaPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 	getTablesFunc      func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getColumnsFunc     func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 	getTableTypesFunc  func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
 	getPrimaryKeysFunc func(ctx context.Context, catalog *string, schema *string, table string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
@@ -58,6 +59,10 @@ func (m *mockMetadataHandler) GetSchemas(ctx context.Context, catalog *string, s
 
 func (m *mockMetadataHandler) GetTables(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return m.getTablesFunc(ctx, catalog, schemaPattern, tablePattern, tableTypes, includeSchema)
+}
+
+func (m *mockMetadataHandler) GetColumns(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	return m.getColumnsFunc(ctx, catalog, schemaPattern, tablePattern, columnPattern)
 }
 
 func (m *mockMetadataHandler) GetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {

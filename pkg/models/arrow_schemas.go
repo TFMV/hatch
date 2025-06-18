@@ -49,6 +49,24 @@ func GetTableTypesSchema() *arrow.Schema {
 	}, nil)
 }
 
+// GetColumnsSchema returns the Arrow schema for column metadata results.
+func GetColumnsSchema() *arrow.Schema {
+	return arrow.NewSchema([]arrow.Field{
+		{Name: "catalog_name", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "db_schema_name", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "table_name", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "column_name", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "ordinal_position", Type: arrow.PrimitiveTypes.Int32, Nullable: false},
+		{Name: "column_default", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "is_nullable", Type: arrow.FixedWidthTypes.Boolean, Nullable: false},
+		{Name: "data_type", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "character_maximum_length", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "numeric_precision", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "numeric_scale", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "datetime_precision", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+}
+
 // GetPrimaryKeysSchema returns the Arrow schema for primary key results.
 func GetPrimaryKeysSchema() *arrow.Schema {
 	return arrow.NewSchema([]arrow.Field{
