@@ -407,12 +407,12 @@ func (s *FlightSQLServer) GetFlightInfoCrossReference(
 	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
 		return s.metadataHandler.GetCrossReference(
 			ctx,
-			cmd.PkRef.Catalog,
-			cmd.PkRef.DBSchema,
-			cmd.PkRef.Table,
-			cmd.FkRef.Catalog,
-			cmd.FkRef.DBSchema,
-			cmd.FkRef.Table,
+			cmd.PKRef.Catalog,
+			cmd.PKRef.DBSchema,
+			cmd.PKRef.Table,
+			cmd.FKRef.Catalog,
+			cmd.FKRef.DBSchema,
+			cmd.FKRef.Table,
 		)
 	})
 }
@@ -423,12 +423,12 @@ func (s *FlightSQLServer) DoGetCrossReference(
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadataHandler.GetCrossReference(
 		ctx,
-		cmd.PkRef.Catalog,
-		cmd.PkRef.DBSchema,
-		cmd.PkRef.Table,
-		cmd.FkRef.Catalog,
-		cmd.FkRef.DBSchema,
-		cmd.FkRef.Table,
+		cmd.PKRef.Catalog,
+		cmd.PKRef.DBSchema,
+		cmd.PKRef.Table,
+		cmd.FKRef.Catalog,
+		cmd.FKRef.DBSchema,
+		cmd.FKRef.Table,
 	)
 }
 
