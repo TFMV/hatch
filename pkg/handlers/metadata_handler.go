@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -11,7 +12,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/rs/zerolog"
 
+	"github.com/TFMV/hatch/pkg/infrastructure/converter"
 	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/services"
 )
@@ -287,6 +290,7 @@ func (h *metadataHandler) GetColumns(ctx context.Context, catalog *string, schem
 	}
 
 	schema := models.GetColumnsSchema()
+	conv := converter.New(zerolog.New(io.Discard))
 	ch := make(chan flight.StreamChunk, 1)
 
 	go func() {
@@ -301,37 +305,69 @@ func (h *metadataHandler) GetColumns(ctx context.Context, catalog *string, schem
 			} else {
 				b.Field(0).AppendNull()
 			}
-			b.Field(1).(*array.StringBuilder).Append(col.SchemaName)
+			if col.SchemaName != "" {
+				b.Field(1).(*array.StringBuilder).Append(col.SchemaName)
+			} else {
+				b.Field(1).AppendNull()
+			}
 			b.Field(2).(*array.StringBuilder).Append(col.TableName)
 			b.Field(3).(*array.StringBuilder).Append(col.Name)
-			b.Field(4).(*array.Int32Builder).Append(int32(col.OrdinalPosition))
-			if col.DefaultValue.Valid {
-				b.Field(5).(*array.StringBuilder).Append(col.DefaultValue.String)
-			} else {
-				b.Field(5).AppendNull()
-			}
-			b.Field(6).(*array.BooleanBuilder).Append(col.IsNullable)
-			b.Field(7).(*array.StringBuilder).Append(col.DataType)
+
+			sqlType := conv.GetSQLType(col.DataType)
+			b.Field(4).(*array.Int32Builder).Append(sqlType)
+			b.Field(5).(*array.StringBuilder).Append(col.DataType)
+
 			if col.CharMaxLength.Valid {
-				b.Field(8).(*array.Int64Builder).Append(col.CharMaxLength.Int64)
+				b.Field(6).(*array.Int32Builder).Append(int32(col.CharMaxLength.Int64))
+				b.Field(13).(*array.Int32Builder).Append(int32(col.CharMaxLength.Int64))
+			} else if col.NumericPrecision.Valid {
+				b.Field(6).(*array.Int32Builder).Append(int32(col.NumericPrecision.Int64))
+				b.Field(13).AppendNull()
+			} else {
+				b.Field(6).AppendNull()
+				b.Field(13).AppendNull()
+			}
+
+			if col.NumericScale.Valid {
+				b.Field(7).(*array.Int32Builder).Append(int32(col.NumericScale.Int64))
+			} else {
+				b.Field(7).AppendNull()
+			}
+
+			if strings.Contains(strings.ToLower(col.DataType), "int") || strings.Contains(strings.ToLower(col.DataType), "decimal") || strings.Contains(strings.ToLower(col.DataType), "numeric") {
+				b.Field(8).(*array.Int32Builder).Append(10)
+			} else if strings.Contains(strings.ToLower(col.DataType), "float") || strings.Contains(strings.ToLower(col.DataType), "double") || strings.Contains(strings.ToLower(col.DataType), "real") {
+				b.Field(8).(*array.Int32Builder).Append(2)
 			} else {
 				b.Field(8).AppendNull()
 			}
-			if col.NumericPrecision.Valid {
-				b.Field(9).(*array.Int64Builder).Append(col.NumericPrecision.Int64)
+
+			if col.IsNullable {
+				b.Field(9).(*array.Int32Builder).Append(1)
 			} else {
-				b.Field(9).AppendNull()
+				b.Field(9).(*array.Int32Builder).Append(0)
 			}
-			if col.NumericScale.Valid {
-				b.Field(10).(*array.Int64Builder).Append(col.NumericScale.Int64)
-			} else {
-				b.Field(10).AppendNull()
-			}
-			if col.DateTimePrecision.Valid {
-				b.Field(11).(*array.Int64Builder).Append(col.DateTimePrecision.Int64)
+
+			b.Field(10).AppendNull() // remarks
+
+			if col.DefaultValue.Valid {
+				b.Field(11).(*array.StringBuilder).Append(col.DefaultValue.String)
 			} else {
 				b.Field(11).AppendNull()
 			}
+
+			b.Field(12).(*array.Int32Builder).Append(sqlType)
+
+			b.Field(14).(*array.Int32Builder).Append(int32(col.OrdinalPosition))
+
+			if col.IsNullable {
+				b.Field(15).(*array.StringBuilder).Append("YES")
+			} else {
+				b.Field(15).(*array.StringBuilder).Append("NO")
+			}
+
+			b.Field(16).(*array.BooleanBuilder).Append(false) // TODO autoincrement
+			b.Field(17).(*array.BooleanBuilder).Append(false) // TODO generated column
 		}
 
 		rec := b.NewRecord()

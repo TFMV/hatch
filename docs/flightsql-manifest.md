@@ -27,3 +27,14 @@
 ## SQL Info
 - [x] GetSQLInfo
 - [x] GetTypeInfo
+
+## JDBC Compatibility Checklist
+- [x] GetCatalogs
+- [x] GetSchemas
+- [x] GetTables
+- [x] GetTableTypes
+- [x] GetColumns
+- [x] GetTypeInfo
+- [x] GetSQLInfo
+- [x] CreatePreparedStatement
+- [x] ClosePreparedStatement
