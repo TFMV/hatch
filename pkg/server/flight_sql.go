@@ -638,21 +638,22 @@ func appendColumnToBuilder(b array.Builder, arr arrow.Array) {
 			}
 		}
 	case *array.BinaryBuilder:
-		col := arr.(*array.Binary)
-		for i := 0; i < col.Len(); i++ {
-			if col.IsNull(i) {
-				builder.AppendNull()
-			} else {
-				builder.Append(col.Value(i))
+		switch col := arr.(type) {
+		case *array.Binary:
+			for i := 0; i < col.Len(); i++ {
+				if col.IsNull(i) {
+					builder.AppendNull()
+				} else {
+					builder.Append(col.Value(i))
+				}
 			}
-		}
-	case *array.LargeBinaryBuilder:
-		col := arr.(*array.LargeBinary)
-		for i := 0; i < col.Len(); i++ {
-			if col.IsNull(i) {
-				builder.AppendNull()
-			} else {
-				builder.Append(col.Value(i))
+		case *array.LargeBinary:
+			for i := 0; i < col.Len(); i++ {
+				if col.IsNull(i) {
+					builder.AppendNull()
+				} else {
+					builder.Append(col.Value(i))
+				}
 			}
 		}
 	default:
