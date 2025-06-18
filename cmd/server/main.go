@@ -338,7 +338,7 @@ func createEnterpriseServer(cfg *config.Config, logger zerolog.Logger, metricsCo
 	// Middleware
 	authMW := middleware.NewAuthMiddleware(cfg.Auth, logger.With().Str("component", "auth_middleware").Logger())
 	logMW := middleware.NewLoggingMiddleware(logger.With().Str("component", "logging_middleware").Logger())
-	metricsMW := middleware.NewMetricsMiddleware(metricsCollector)
+	metricsMW := middleware.NewMetricsMiddleware(&middlewareMetricsAdapter{collector: metricsCollector})
 	recoverMW := middleware.NewRecoveryMiddleware(logger.With().Str("component", "recovery_middleware").Logger())
 
 	// Create enterprise server
@@ -836,4 +836,34 @@ type handlerTimerAdapter struct {
 
 func (t *handlerTimerAdapter) Stop() {
 	t.timer.Stop()
+}
+
+// middlewareMetricsAdapter adapts metrics.Collector to middleware.MetricsCollector
+type middlewareMetricsAdapter struct {
+	collector metrics.Collector
+}
+
+func (m *middlewareMetricsAdapter) IncrementCounter(name string, labels ...string) {
+	m.collector.IncrementCounter(name, labels...)
+}
+
+func (m *middlewareMetricsAdapter) RecordHistogram(name string, value float64, labels ...string) {
+	m.collector.RecordHistogram(name, value, labels...)
+}
+
+func (m *middlewareMetricsAdapter) RecordGauge(name string, value float64, labels ...string) {
+	m.collector.RecordGauge(name, value, labels...)
+}
+
+func (m *middlewareMetricsAdapter) StartTimer(name string) middleware.Timer {
+	return &middlewareTimerAdapter{timer: m.collector.StartTimer(name)}
+}
+
+// middlewareTimerAdapter adapts metrics.Timer to middleware.Timer
+type middlewareTimerAdapter struct {
+	timer metrics.Timer
+}
+
+func (t *middlewareTimerAdapter) Stop() float64 {
+	return t.timer.Stop()
 }
