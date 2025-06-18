@@ -509,6 +509,160 @@ func (s *FlightSQLServer) ClosePreparedStatement(
 	return nil
 }
 
+// appendColumnToBuilder appends the contents of arr to the provided builder.
+// It attempts to use an AppendArray method when available and falls back to a
+// row-wise copy for common Arrow types.
+func appendColumnToBuilder(b array.Builder, arr arrow.Array) {
+	// Use AppendArray when the builder supports it.
+	if app, ok := b.(interface{ AppendArray(arrow.Array) }); ok {
+		app.AppendArray(arr)
+		return
+	}
+
+	switch builder := b.(type) {
+	case *array.BooleanBuilder:
+		col := arr.(*array.Boolean)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Int8Builder:
+		col := arr.(*array.Int8)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Int16Builder:
+		col := arr.(*array.Int16)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Int32Builder:
+		col := arr.(*array.Int32)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Int64Builder:
+		col := arr.(*array.Int64)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Uint8Builder:
+		col := arr.(*array.Uint8)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Uint16Builder:
+		col := arr.(*array.Uint16)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Uint32Builder:
+		col := arr.(*array.Uint32)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Uint64Builder:
+		col := arr.(*array.Uint64)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Float32Builder:
+		col := arr.(*array.Float32)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.Float64Builder:
+		col := arr.(*array.Float64)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.StringBuilder:
+		col := arr.(*array.String)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.LargeStringBuilder:
+		col := arr.(*array.LargeString)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.BinaryBuilder:
+		col := arr.(*array.Binary)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	case *array.LargeBinaryBuilder:
+		col := arr.(*array.LargeBinary)
+		for i := 0; i < col.Len(); i++ {
+			if col.IsNull(i) {
+				builder.AppendNull()
+			} else {
+				builder.Append(col.Value(i))
+			}
+		}
+	default:
+		// Unsupported type - append nulls to maintain row count
+		for i := 0; i < arr.Len(); i++ {
+			b.AppendNull()
+		}
+	}
+}
+
 func (s *FlightSQLServer) GetFlightInfoPreparedStatement(
 	ctx context.Context,
 	cmd flightsql.PreparedStatementQuery,
@@ -570,7 +724,7 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 			return nil, status.Errorf(codes.InvalidArgument, "parameter batch schema mismatch")
 		}
 		for i := range rec.Columns() {
-			builder.Field(i).AppendArray(rec.Column(i))
+			appendColumnToBuilder(builder.Field(i), rec.Column(i))
 		}
 		rec.Release()
 	}
@@ -631,7 +785,7 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 			return 0, status.Errorf(codes.InvalidArgument, "parameter batch schema mismatch")
 		}
 		for i := range rec.Columns() {
-			builder.Field(i).AppendArray(rec.Column(i))
+			appendColumnToBuilder(builder.Field(i), rec.Column(i))
 		}
 		rec.Release()
 	}
