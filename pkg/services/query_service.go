@@ -207,8 +207,10 @@ func (s *queryService) ValidateQuery(ctx context.Context, query string) error {
 		}
 	}
 
-	// TODO: For now, we consider the query valid if it's not empty
-	// In the future, we could use EXPLAIN to validate without execution
+	if err := s.classifier.ValidateStatement(query); err != nil {
+		return errors.New(errors.CodeInvalidRequest, err.Error())
+	}
+
 	return nil
 }
 
@@ -243,6 +245,10 @@ func (s *queryService) validateUpdateRequest(req *models.UpdateRequest) error {
 
 	if req.Statement == "" {
 		return errors.New(errors.CodeInvalidRequest, "statement cannot be empty")
+	}
+
+	if err := s.classifier.ValidateStatement(req.Statement); err != nil {
+		return errors.New(errors.CodeInvalidRequest, err.Error())
 	}
 
 	// Validate timeout

@@ -53,6 +53,10 @@ func NewService(repository StreamingRepository, logger zerolog.Logger, metrics M
 
 // HandleDoPut streams data into a specified target.
 func (s *service) HandleDoPut(ctx context.Context, desc *flight.FlightDescriptor, schema *arrow.Schema, reader flight.MessageReader, writer flight.MetadataWriter) error {
+	if desc == nil || schema == nil || reader == nil || writer == nil {
+		return status.Error(codes.InvalidArgument, "invalid stream inputs")
+	}
+
 	s.logger.Debug().Fields(map[string]interface{}{"descriptor_path": desc.Path}).Msg("HandleDoPut called")
 
 	clientID := getClientID(ctx)
@@ -69,6 +73,9 @@ func (s *service) HandleDoPut(ctx context.Context, desc *flight.FlightDescriptor
 		s.metrics.IncrementCounter("flight_sql_rpc_total", "rpc", "DoPut", "status", "error")
 		s.logger.Error().Str("rpc_name", "DoPut").Str("client_id", clientID).Float64("duration_ms", time.Since(start).Seconds()*1000).Str("error_type", "missing_target_path").Msg("failed to ingest stream")
 		return status.Error(codes.InvalidArgument, "missing target path in FlightDescriptor")
+	}
+	if schema == nil || len(schema.Fields()) == 0 {
+		return status.Error(codes.InvalidArgument, "missing schema")
 	}
 	targetTable := desc.Path[0]
 

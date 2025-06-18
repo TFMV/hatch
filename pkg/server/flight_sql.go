@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
 
@@ -257,6 +258,9 @@ func (s *FlightSQLServer) infoFromHandler(
 	desc *flight.FlightDescriptor,
 	get func() (*arrow.Schema, <-chan flight.StreamChunk, error),
 ) (*flight.FlightInfo, error) {
+	if desc == nil {
+		return nil, status.Error(codes.InvalidArgument, "missing descriptor")
+	}
 	schema, _, err := get()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "%v", err)
@@ -507,7 +511,17 @@ func (s *FlightSQLServer) CreatePreparedStatement(
 	ctx context.Context,
 	req flightsql.ActionCreatePreparedStatementRequest,
 ) (flightsql.ActionCreatePreparedStatementResult, error) {
-	h, sch, err := s.preparedStatementHandler.Create(ctx, req.GetQuery(), string(req.GetTransactionId()))
+	query := req.GetQuery()
+	if strings.TrimSpace(query) == "" {
+		return flightsql.ActionCreatePreparedStatementResult{}, status.Error(codes.InvalidArgument, "empty query")
+	}
+
+	classifier := services.NewStatementClassifier()
+	if err := classifier.ValidateStatement(query); err != nil {
+		return flightsql.ActionCreatePreparedStatementResult{}, status.Errorf(codes.InvalidArgument, "invalid query: %v", err)
+	}
+
+	h, sch, err := s.preparedStatementHandler.Create(ctx, query, string(req.GetTransactionId()))
 	if err != nil {
 		return flightsql.ActionCreatePreparedStatementResult{}, status.Errorf(codes.Internal, "create ps: %v", err)
 	}
