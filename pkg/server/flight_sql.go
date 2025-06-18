@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
@@ -531,13 +532,34 @@ func (s *FlightSQLServer) DoPutPreparedStatementQuery(
 	reader flight.MessageReader,
 	writer flight.MetadataWriter,
 ) ([]byte, error) {
-	record, err := reader.Read()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "read params: %v", err)
+	var params arrow.Record
+	for {
+		rec, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			if params != nil {
+				params.Release()
+			}
+			return nil, status.Errorf(codes.Internal, "read params: %v", err)
+		}
+		if rec == nil {
+			continue
+		}
+		if params == nil {
+			params = rec
+		} else {
+			// TODO: support multiple parameter batches
+			rec.Release()
+		}
 	}
-	defer record.Release()
 
-	if err := s.preparedStatementHandler.SetParameters(ctx, string(cmd.GetPreparedStatementHandle()), record); err != nil {
+	if params != nil {
+		defer params.Release()
+	}
+
+	if err := s.preparedStatementHandler.SetParameters(ctx, string(cmd.GetPreparedStatementHandle()), params); err != nil {
 		return nil, status.Errorf(codes.Internal, "set ps params: %v", err)
 	}
 	return []byte(cmd.GetPreparedStatementHandle()), nil
@@ -548,13 +570,34 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 	cmd flightsql.PreparedStatementUpdate,
 	reader flight.MessageReader,
 ) (int64, error) {
-	record, err := reader.Read()
-	if err != nil {
-		return 0, status.Errorf(codes.Internal, "read params: %v", err)
+	var params arrow.Record
+	for {
+		rec, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			if params != nil {
+				params.Release()
+			}
+			return 0, status.Errorf(codes.Internal, "read params: %v", err)
+		}
+		if rec == nil {
+			continue
+		}
+		if params == nil {
+			params = rec
+		} else {
+			// TODO: support multiple parameter batches
+			rec.Release()
+		}
 	}
-	defer record.Release()
 
-	affected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), record)
+	if params != nil {
+		defer params.Release()
+	}
+
+	affected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, string(cmd.GetPreparedStatementHandle()), params)
 	if err != nil {
 		return 0, status.Errorf(codes.Internal, "execute ps update: %v", err)
 	}
