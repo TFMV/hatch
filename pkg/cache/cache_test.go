@@ -135,15 +135,30 @@ func TestDefaultCacheKeyGenerator(t *testing.T) {
 
 	// Test basic key generation
 	key := generator.GenerateKey("SELECT * FROM test", nil)
-	assert.Equal(t, "SELECT * FROM test", key)
+	assert.Equal(t, "a5ffdb84d5677a60c947770487b6e639043ce3b47a25a4dec9a90c53103eb7aa", key)
 
-	// Test with parameters (currently not used in implementation)
+	// Test with parameters
 	params := map[string]interface{}{
 		"id":   1,
 		"name": "test",
 	}
+
 	key = generator.GenerateKey("SELECT * FROM test WHERE id = ?", params)
-	assert.Equal(t, "SELECT * FROM test WHERE id = ?", key)
+	assert.Equal(t, "63a5b43249e3b72dcbdfcbde1fb886c7d1d8f1967f0c6551b7b03253ba2307d3", key)
+}
+
+func TestDefaultCacheKeyGeneratorStableParams(t *testing.T) {
+	generator := &DefaultCacheKeyGenerator{}
+
+	query := "SELECT * FROM test WHERE id = ?"
+	params1 := map[string]interface{}{"id": 1, "name": "test"}
+	params2 := map[string]interface{}{"name": "test", "id": 1}
+
+	key1 := generator.GenerateKey(query, params1)
+	key2 := generator.GenerateKey(query, params2)
+
+	assert.Equal(t, key1, key2)
+	assert.Equal(t, "63a5b43249e3b72dcbdfcbde1fb886c7d1d8f1967f0c6551b7b03253ba2307d3", key1)
 }
 
 func TestCacheEntry(t *testing.T) {
