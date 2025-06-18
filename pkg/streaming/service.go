@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"encoding/binary"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
@@ -62,6 +63,15 @@ func (s *service) HandleDoPut(ctx context.Context, desc *flight.FlightDescriptor
 
 	s.logger.Info().Str("target_table", targetTable).Int64("rows_affected", rowsAffected).Msg("successfully ingested stream")
 	s.metrics.IncrementCounter("streaming_service_handle_do_put_success_total")
+
+	// Encode rowsAffected as the PutResult metadata
+	result := make([]byte, 8)
+	binary.LittleEndian.PutUint64(result, uint64(rowsAffected))
+	if err := writer.Write(result); err != nil {
+		s.logger.Error().Err(err).Msg("failed to write PutResult")
+		s.metrics.IncrementCounter("streaming_service_handle_do_put_errors_total", "reason", "write_put_result")
+		return status.Errorf(codes.Internal, "failed to write PutResult: %v", err)
+	}
 
 	return nil
 }
