@@ -42,12 +42,14 @@ func (m *mockQueryHandler) ExecuteUpdate(ctx context.Context, query string, txnI
 
 type mockMetadataHandler struct {
 	handlers.MetadataHandler
-	getCatalogsFunc    func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	getSchemasFunc     func(ctx context.Context, catalog *string, schemaPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	getTablesFunc      func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	getColumnsFunc     func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	getTableTypesFunc  func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
-	getPrimaryKeysFunc func(ctx context.Context, catalog *string, schema *string, table string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getCatalogsFunc     func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getSchemasFunc      func(ctx context.Context, catalog *string, schemaPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getTablesFunc       func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getColumnsFunc      func(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getTableTypesFunc   func(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getPrimaryKeysFunc  func(ctx context.Context, catalog *string, schema *string, table string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getSqlInfoFunc      func(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error)
+	getXdbcTypeInfoFunc func(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
 
 func (m *mockMetadataHandler) GetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
@@ -72,6 +74,14 @@ func (m *mockMetadataHandler) GetTableTypes(ctx context.Context) (*arrow.Schema,
 
 func (m *mockMetadataHandler) GetPrimaryKeys(ctx context.Context, catalog *string, schema *string, table string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return m.getPrimaryKeysFunc(ctx, catalog, schema, table)
+}
+
+func (m *mockMetadataHandler) GetSqlInfo(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	return m.getSqlInfoFunc(ctx, info)
+}
+
+func (m *mockMetadataHandler) GetXdbcTypeInfo(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	return m.getXdbcTypeInfoFunc(ctx, dataType)
 }
 
 type mockTransactionHandler struct {
