@@ -2,9 +2,10 @@
 package handlers
 
 import (
-	"context"
-	"fmt"
-	"strings"
+        "context"
+        "fmt"
+        "regexp"
+        "strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -224,50 +225,67 @@ func (h *metadataHandler) GetTables(ctx context.Context, catalog *string, schema
 	return schema, chunks, nil
 }
 
-// GetColumns returns columns for a specific table. Wildcard patterns are currently
-// unsupported and only exact table names are handled.
+// GetColumns returns columns matching the provided patterns.
 func (h *metadataHandler) GetColumns(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	timer := h.metrics.StartTimer("handler_get_columns")
-	defer timer.Stop()
+        timer := h.metrics.StartTimer("handler_get_columns")
+        defer timer.Stop()
 
-	h.logger.Debug("Getting columns",
-		"catalog", catalog,
-		"schema_pattern", schemaPattern,
-		"table_pattern", tablePattern,
-		"column_pattern", columnPattern,
-	)
+        h.logger.Debug("Getting columns",
+                "catalog", catalog,
+                "schema_pattern", schemaPattern,
+                "table_pattern", tablePattern,
+                "column_pattern", columnPattern,
+        )
 
-	// Only exact table names are supported at the repository layer.
-	if tablePattern == nil || *tablePattern == "" || *tablePattern == "%" {
-		// TODO: support pattern matching for tables
-		ch := make(chan flight.StreamChunk)
-		close(ch)
-		return models.GetColumnsSchema(), ch, nil
-	}
+        // ── resolve tables ─────────────────────────────────────────────
+        var tables []models.TableRef
+        if tablePattern == nil || *tablePattern == "" || strings.ContainsAny(*tablePattern, "%_") {
+                opts := models.GetTablesOptions{
+                        Catalog:                catalog,
+                        SchemaFilterPattern:    schemaPattern,
+                        TableNameFilterPattern: tablePattern,
+                        IncludeSchema:          false,
+                }
+                tbls, err := h.metadataService.GetTables(ctx, opts)
+                if err != nil {
+                        h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_columns")
+                        return nil, nil, fmt.Errorf("failed to resolve tables: %w", err)
+                }
+                for _, t := range tbls {
+                        c := t.CatalogName
+                        s := t.SchemaName
+                        ref := models.TableRef{Catalog: &c, DBSchema: &s, Table: t.Name}
+                        tables = append(tables, ref)
+                }
+        } else {
+                tables = append(tables, models.TableRef{Catalog: catalog, DBSchema: schemaPattern, Table: *tablePattern})
+        }
 
-	tableRef := models.TableRef{
-		Catalog:  catalog,
-		DBSchema: schemaPattern,
-		Table:    *tablePattern,
-	}
+        // ── gather columns ─────────────────────────────────────────────
+        var cols []models.Column
+        for _, ref := range tables {
+                c, err := h.metadataService.GetColumns(ctx, ref)
+                if err != nil {
+                        h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_columns")
+                        return nil, nil, fmt.Errorf("failed to get columns: %w", err)
+                }
+                cols = append(cols, c...)
+        }
 
-	cols, err := h.metadataService.GetColumns(ctx, tableRef)
-	if err != nil {
-		h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_columns")
-		return nil, nil, fmt.Errorf("failed to get columns: %w", err)
-	}
-
-	// Filter columns by column name pattern if provided (basic prefix match)
-	if columnPattern != nil && *columnPattern != "" && *columnPattern != "%" {
-		pat := strings.TrimSuffix(*columnPattern, "%")
-		filtered := cols[:0]
-		for _, c := range cols {
-			if strings.HasPrefix(c.Name, pat) {
-				filtered = append(filtered, c)
-			}
-		}
-		cols = filtered
-	}
+        // ── filter column names ───────────────────────────────────────
+        if columnPattern != nil && *columnPattern != "" && *columnPattern != "%" {
+                pat := regexp.QuoteMeta(*columnPattern)
+                pat = strings.ReplaceAll(pat, "\\%", ".*")
+                pat = strings.ReplaceAll(pat, "\\_", ".")
+                re := regexp.MustCompile("^" + pat + "$")
+                filtered := cols[:0]
+                for _, c := range cols {
+                        if re.MatchString(c.Name) {
+                                filtered = append(filtered, c)
+                        }
+                }
+                cols = filtered
+        }
 
 	schema := models.GetColumnsSchema()
 	ch := make(chan flight.StreamChunk, 1)

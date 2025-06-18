@@ -5,7 +5,7 @@
 - [x] GetSchemas
  - [x] GetTables
 - [x] GetTableTypes
- - [~] GetColumns
+- [x] GetColumns
 - [x] GetPrimaryKeys
 - [x] GetImportedKeys
 - [x] GetExportedKeys
