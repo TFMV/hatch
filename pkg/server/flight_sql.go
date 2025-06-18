@@ -46,19 +46,7 @@ type MetricsCollector interface {
 
 // Timer represents a timing measurement.
 type Timer interface {
-        Stop() float64
-}
-
-// CrossReference represents a request for foreign key relationships
-// between a primary key table and a foreign key table. This mirrors the
-// fields provided by the Flight SQL spec for the cross reference command.
-type CrossReference struct {
-        PkCatalog *string
-        PkDbSchema *string
-        PkTable   string
-        FkCatalog *string
-        FkDbSchema *string
-        FkTable   string
+	Stop() float64
 }
 
 //───────────────────────────────────
@@ -450,18 +438,18 @@ func (s *FlightSQLServer) DoGetExportedKeys(
 }
 
 func (s *FlightSQLServer) GetFlightInfoCrossReference(
-        ctx context.Context,
-        cmd CrossReference,
-        desc *flight.FlightDescriptor,
+	ctx context.Context,
+	cmd flightsql.CrossTableRef,
+	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-        return nil, status.Error(codes.Unimplemented, "cross reference not supported")
+	return nil, status.Error(codes.Unimplemented, "cross reference not supported")
 }
 
 func (s *FlightSQLServer) DoGetCrossReference(
-        ctx context.Context,
-        cmd CrossReference,
+	ctx context.Context,
+	cmd flightsql.CrossTableRef,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-        return nil, nil, status.Error(codes.Unimplemented, "cross reference not supported")
+	return nil, nil, status.Error(codes.Unimplemented, "cross reference not supported")
 }
 
 func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(
