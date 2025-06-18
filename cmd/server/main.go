@@ -49,7 +49,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "hatch",
 	Short: "Hatch Flight SQL Server",
-	Long: `A high-performance Flight SQL server backed by Hatch.
+	Long: `A high-performance Flight SQL server backed by DuckDB.
 
 Hatch implements a Flight SQL Server backed by a DuckDB database.`,
 }
