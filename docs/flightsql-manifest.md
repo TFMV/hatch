@@ -39,12 +39,20 @@
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
 
+## Database Backends
+- [x] DuckDB
+- [ ] ClickHouse
+- [ ] More to come...
+
 ## Known Limitations
 - [ ] DoExchange not supported
 - [ ] No TLS support
 - [ ] Authentication is experimental
+- [ ] Some backends may have limited feature support
 
 ## Next Roadmap Items
 - Implement DoExchange
 - Add authentication plugins
 - Expand SQLInfo catalogue
+- Add ClickHouse backend support
+- Improve backend abstraction layer
