@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -305,5 +306,34 @@ type DefaultCacheKeyGenerator struct{}
 // The resulting key is a hex‑encoded SHA‑256 digest, keeping it short
 // and collision‑resistant while hiding potentially sensitive values.
 func (g *DefaultCacheKeyGenerator) GenerateKey(query string, params map[string]interface{}) string {
-	return query
+	// Normalise all whitespace in the query to a single space so semantically
+	// identical queries hash to the same key.
+	normalized := strings.Join(strings.Fields(query), " ")
+
+	var buf bytes.Buffer
+	buf.WriteString(normalized)
+
+	// Serialise parameters in stable order so maps with different key
+	// ordering generate the same cache key.
+	if len(params) > 0 {
+		buf.WriteByte('|')
+
+		keys := make([]string, 0, len(params))
+		for k := range params {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.WriteString(Escape(k))
+			buf.WriteByte('=')
+			buf.WriteString(RenderValue(params[k]))
+		}
+	}
+
+	sum := sha256.Sum256(buf.Bytes())
+	return hex.EncodeToString(sum[:])
 }
