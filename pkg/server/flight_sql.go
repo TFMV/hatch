@@ -350,7 +350,7 @@ func (s *FlightSQLServer) DoGetTableTypes(
 
 func (s *FlightSQLServer) GetFlightInfoColumns(
 	ctx context.Context,
-	cmd flightsql.CommandGetColumns,
+	cmd flightsql.GetColumns,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
 	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
@@ -366,7 +366,7 @@ func (s *FlightSQLServer) GetFlightInfoColumns(
 
 func (s *FlightSQLServer) DoGetColumns(
 	ctx context.Context,
-	cmd flightsql.CommandGetColumns,
+	cmd flightsql.GetColumns,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadataHandler.GetColumns(
 		ctx,
