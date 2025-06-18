@@ -52,18 +52,24 @@ func GetTableTypesSchema() *arrow.Schema {
 // GetColumnsSchema returns the Arrow schema for column metadata results.
 func GetColumnsSchema() *arrow.Schema {
 	return arrow.NewSchema([]arrow.Field{
-		{Name: "catalog_name", Type: arrow.BinaryTypes.String, Nullable: true},
-		{Name: "db_schema_name", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "table_cat", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "table_schem", Type: arrow.BinaryTypes.String, Nullable: true},
 		{Name: "table_name", Type: arrow.BinaryTypes.String, Nullable: false},
 		{Name: "column_name", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "data_type", Type: arrow.PrimitiveTypes.Int32, Nullable: false},
+		{Name: "type_name", Type: arrow.BinaryTypes.String, Nullable: false},
+		{Name: "column_size", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "decimal_digits", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "num_prec_radix", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "nullable", Type: arrow.PrimitiveTypes.Int32, Nullable: false},
+		{Name: "remarks", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "column_def", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "sql_data_type", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "char_octet_length", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
 		{Name: "ordinal_position", Type: arrow.PrimitiveTypes.Int32, Nullable: false},
-		{Name: "column_default", Type: arrow.BinaryTypes.String, Nullable: true},
-		{Name: "is_nullable", Type: arrow.FixedWidthTypes.Boolean, Nullable: false},
-		{Name: "data_type", Type: arrow.BinaryTypes.String, Nullable: false},
-		{Name: "character_maximum_length", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
-		{Name: "numeric_precision", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
-		{Name: "numeric_scale", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
-		{Name: "datetime_precision", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "is_nullable", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "is_autoincrement", Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
+		{Name: "is_generatedcolumn", Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
 	}, nil)
 }
 
