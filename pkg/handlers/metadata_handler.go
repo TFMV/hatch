@@ -198,9 +198,18 @@ func (h *metadataHandler) GetTables(ctx context.Context, catalog *string, schema
 
 			// table_schema (if requested)
 			if includeSchema {
-				// For now, append empty binary data
-				// In a full implementation, this would contain the serialized schema
-				builder.Field(fieldIdx).(*array.BinaryBuilder).AppendNull()
+				ref := models.TableRef{
+					Catalog:  &table.CatalogName,
+					DBSchema: &table.SchemaName,
+					Table:    table.Name,
+				}
+				tblSchema, err := h.metadataService.GetTableSchema(ctx, ref)
+				if err != nil || tblSchema == nil {
+					builder.Field(fieldIdx).(*array.BinaryBuilder).AppendNull()
+				} else {
+					serialized := flight.SerializeSchema(tblSchema, h.allocator)
+					builder.Field(fieldIdx).(*array.BinaryBuilder).Append(serialized)
+				}
 			}
 		}
 

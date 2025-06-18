@@ -7,6 +7,7 @@ import (
 	"github.com/TFMV/hatch/pkg/errors"
 	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/repositories"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // metadataService implements MetadataService interface.
@@ -146,6 +147,32 @@ func (s *metadataService) GetColumns(ctx context.Context, table models.TableRef)
 	s.logger.Info("Retrieved columns", "count", len(columns), "table", table.Table)
 
 	return columns, nil
+}
+
+// GetTableSchema returns the Arrow schema for a table.
+func (s *metadataService) GetTableSchema(ctx context.Context, table models.TableRef) (*arrow.Schema, error) {
+	timer := s.metrics.StartTimer("metadata_get_table_schema")
+	defer timer.Stop()
+
+	s.logger.Debug("Getting table schema",
+		"catalog", table.Catalog,
+		"schema", table.DBSchema,
+		"table", table.Table)
+
+	if err := s.validateTableRef(table); err != nil {
+		s.metrics.IncrementCounter("metadata_validation_errors", "operation", "get_table_schema")
+		return nil, err
+	}
+
+	schema, err := s.repo.GetTableSchema(ctx, table)
+	if err != nil {
+		s.metrics.IncrementCounter("metadata_errors", "operation", "get_table_schema")
+		s.logger.Error("Failed to get table schema", "error", err, "table", table)
+		return nil, errors.Wrap(err, errors.CodeInternal, "failed to get table schema")
+	}
+
+	s.logger.Info("Retrieved table schema", "table", table.Table)
+	return schema, nil
 }
 
 // GetPrimaryKeys returns primary keys for a table.

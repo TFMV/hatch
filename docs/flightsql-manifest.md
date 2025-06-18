@@ -3,7 +3,7 @@
 ## Metadata RPCs
 - [x] GetCatalogs
 - [x] GetSchemas
-- [~] GetTables
+ - [x] GetTables
 - [x] GetTableTypes
 - [ ] GetColumns
 - [x] GetPrimaryKeys

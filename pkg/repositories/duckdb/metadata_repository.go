@@ -147,6 +147,38 @@ WHERE  table_name = ?`)
 	return scanColumns(rows)
 }
 
+func (r *metadataRepository) GetTableSchema(ctx context.Context, ref models.TableRef) (*arrow.Schema, error) {
+	var sb strings.Builder
+	sb.WriteString("SELECT * FROM ")
+	if s := strPtr(ref.DBSchema); s != "" {
+		sb.WriteString(quoteIdentifier(s))
+		sb.WriteRune('.')
+	}
+	sb.WriteString(quoteIdentifier(ref.Table))
+	sb.WriteString(" LIMIT 0")
+
+	db, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, sb.String())
+	if err != nil {
+		return nil, r.wrapDBErr(err, sb.String())
+	}
+	defer rows.Close()
+
+	cols, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	tc := converter.New(r.log)
+	schema, err := tc.ConvertToArrowSchema(cols)
+	if err != nil {
+		return nil, err
+	}
+	return schema, nil
+}
+
 // Foreign‑key helpers below remain unimplemented in DuckDB.
 func (r *metadataRepository) GetPrimaryKeys(ctx context.Context, ref models.TableRef) ([]models.Key, error) {
 	// TODO: query catalog tables once DuckDB exposes primary key metadata
@@ -719,6 +751,10 @@ func strPtr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+func quoteIdentifier(name string) string {
+	return fmt.Sprintf("\"%s\"", strings.ReplaceAll(name, "\"", "\"\""))
 }
 
 func toFKRule(rule string) models.FKRule {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+
 	"github.com/TFMV/hatch/pkg/models"
 	"github.com/TFMV/hatch/pkg/repositories"
 )
@@ -26,6 +28,7 @@ type MetadataService interface {
 	GetTables(ctx context.Context, opts models.GetTablesOptions) ([]models.Table, error)
 	GetTableTypes(ctx context.Context) ([]string, error)
 	GetColumns(ctx context.Context, table models.TableRef) ([]models.Column, error)
+	GetTableSchema(ctx context.Context, table models.TableRef) (*arrow.Schema, error)
 	GetPrimaryKeys(ctx context.Context, table models.TableRef) ([]models.Key, error)
 	GetImportedKeys(ctx context.Context, table models.TableRef) ([]models.ForeignKey, error)
 	GetExportedKeys(ctx context.Context, table models.TableRef) ([]models.ForeignKey, error)
