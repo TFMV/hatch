@@ -272,8 +272,8 @@ func (h *preparedStatementHandler) SetParameters(ctx context.Context, handle str
 	// Convert Arrow record to parameter values
 	paramValues, err := h.extractParameters(params)
 	if err != nil {
-		// params record is released by extractParameters if it creates it, or by caller if passed in.
-		// Here, params is passed in, so the caller (DoPutPreparedStatementQuery) should release it.
+		// The params record is owned by the caller (e.g., DoPutPreparedStatementQuery)
+		// and must be released there.
 		h.metrics.IncrementCounter("handler_prepared_statement_parameter_errors")
 		return fmt.Errorf("failed to extract parameters: %w", err)
 	}
@@ -296,8 +296,6 @@ func (h *preparedStatementHandler) extractParameters(params arrow.Record) ([][]i
 	if params == nil {
 		return nil, nil
 	}
-
-	defer params.Release()
 
 	numRows := params.NumRows()
 	numCols := params.NumCols()

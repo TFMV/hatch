@@ -5,9 +5,15 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
+	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/hatch/pkg/services"
 )
 
 // MockPreparedStatementHandler is a mock implementation of PreparedStatementHandler
@@ -422,4 +428,78 @@ func TestPreparedStatementHandler_SetParameters(t *testing.T) {
 			mockHandler.AssertExpectations(t)
 		})
 	}
+}
+
+// mockPreparedStatementService implements services.PreparedStatementService for tests.
+type mockPreparedStatementService struct {
+	services.PreparedStatementService
+	setParametersFunc func(ctx context.Context, handle string, params [][]interface{}) error
+}
+
+func (m *mockPreparedStatementService) Create(ctx context.Context, query string, transactionID string) (*models.PreparedStatement, error) {
+	return nil, nil
+}
+
+func (m *mockPreparedStatementService) Get(ctx context.Context, handle string) (*models.PreparedStatement, error) {
+	return nil, nil
+}
+
+func (m *mockPreparedStatementService) Close(ctx context.Context, handle string) error {
+	return nil
+}
+
+func (m *mockPreparedStatementService) ExecuteQuery(ctx context.Context, handle string, params [][]interface{}) (*models.QueryResult, error) {
+	return nil, nil
+}
+
+func (m *mockPreparedStatementService) ExecuteUpdate(ctx context.Context, handle string, params [][]interface{}) (*models.UpdateResult, error) {
+	return nil, nil
+}
+
+func (m *mockPreparedStatementService) List(ctx context.Context, transactionID string) ([]*models.PreparedStatement, error) {
+	return nil, nil
+}
+
+func (m *mockPreparedStatementService) SetParameters(ctx context.Context, handle string, params [][]interface{}) error {
+	if m.setParametersFunc != nil {
+		return m.setParametersFunc(ctx, handle, params)
+	}
+	return nil
+}
+
+// mockLogger implements services.Logger for tests.
+type mockLogger struct{}
+
+func (m *mockLogger) Debug(msg string, keysAndValues ...interface{}) {}
+func (m *mockLogger) Info(msg string, keysAndValues ...interface{})  {}
+func (m *mockLogger) Warn(msg string, keysAndValues ...interface{})  {}
+func (m *mockLogger) Error(msg string, keysAndValues ...interface{}) {}
+
+func TestPreparedStatementHandler_SetParametersRealRecord(t *testing.T) {
+	allocator := memory.NewGoAllocator()
+
+	captured := [][]interface{}{}
+	svc := &mockPreparedStatementService{
+		setParametersFunc: func(ctx context.Context, handle string, params [][]interface{}) error {
+			captured = params
+			return nil
+		},
+	}
+	handler := NewPreparedStatementHandler(svc, nil, allocator, &mockLogger{}, metrics.NewNoOpCollector())
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	builder := array.NewRecordBuilder(allocator, schema)
+	defer builder.Release()
+	builder.Field(0).(*array.Int64Builder).Append(42)
+	record := builder.NewRecord()
+	defer record.Release()
+
+	assert.NotPanics(t, func() {
+		err := handler.SetParameters(context.Background(), "stmt", record)
+		assert.NoError(t, err)
+	})
+
+	assert.Equal(t, 1, len(captured))
+	assert.Equal(t, 1, len(captured[0]))
+	assert.Equal(t, int64(42), captured[0][0])
 }
