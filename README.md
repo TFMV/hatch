@@ -13,10 +13,8 @@ Hatch keeps DuckDB's magic small, open, and composable so your data can fly wher
 
 ---
 
-⚠️  Hatch is under active development.
+Hatch is under active development.
 It is experimental and **not yet ready for use.**
-
-Please note that the AUR package is community-maintained (AlphaJack), and I will not be able to support issues that arise from that setup.
 
 For a stable implementation, see GizmoSQL:
 👉 <https://github.com/gizmodata/gizmosql>
@@ -25,7 +23,7 @@ For a stable implementation, see GizmoSQL:
 
 ---
 
-## 🙋 Why Hatch Exists
+## Why Hatch Exists
 
 ### 1. Arrow-Native Networking Is Inevitable  
 
@@ -49,6 +47,6 @@ Hatch is scaffolding, not a silo.
 
 ---
 
-## 📄 License
+## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
