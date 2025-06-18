@@ -30,19 +30,25 @@ func TestSqlInfoResult_ToArrowRecord(t *testing.T) {
 	require.Equal(t, int64(len(infos)), rec.NumRows())
 	require.True(t, rec.Schema().Equal(GetSqlInfoSchema()))
 
-	codes := rec.Column(1).(*array.DenseUnion).TypeCodes()
-	expected := []arrow.UnionTypeCode{0, 1, 2, 3, 4, 5, 0}
-	require.Equal(t, expected, codes[:len(expected)])
-
 	valUnion := rec.Column(1).(*array.DenseUnion)
+
+	// Check type codes for each row
+	expectedCodes := []arrow.UnionTypeCode{0, 1, 2, 3, 4, 5, 0}
+	for i := 0; i < len(expectedCodes); i++ {
+		assert.Equal(t, expectedCodes[i], valUnion.TypeCode(i))
+	}
+
 	// row 0: string "hello"
 	sv := valUnion.Field(0).(*array.String)
-	assert.Equal(t, "hello", sv.Value(int(valUnion.ValueOffsets()[0])))
+	offset0 := valUnion.ValueOffset(0)
+	assert.Equal(t, "hello", sv.Value(int(offset0)))
 
 	// row 1: bool true
 	bv := valUnion.Field(1).(*array.Boolean)
-	assert.True(t, bv.Value(int(valUnion.ValueOffsets()[1])))
+	offset1 := valUnion.ValueOffset(1)
+	assert.True(t, bv.Value(int(offset1)))
 
 	// row 6: default branch -> empty string
-	assert.Equal(t, "", sv.Value(int(valUnion.ValueOffsets()[6])))
+	offset6 := valUnion.ValueOffset(6)
+	assert.Equal(t, "", sv.Value(int(offset6)))
 }
