@@ -14,7 +14,7 @@
 ## Execution RPCs
 - [x] DoGet
 - [~] DoPut
-- [ ] DoExchange
+ - [~] DoExchange
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
 
