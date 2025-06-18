@@ -9,7 +9,7 @@
 - [x] GetPrimaryKeys
 - [x] GetImportedKeys
 - [x] GetExportedKeys
-- [ ] GetCrossReference
+- [~] GetCrossReference
 
 ## Execution RPCs
 - [x] DoGet
