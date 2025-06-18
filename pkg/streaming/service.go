@@ -18,6 +18,7 @@ import (
 type MetricsCollector interface {
 	IncrementCounter(name string, labels ...string)
 	StartTimer(name string) Timer
+	RecordHistogram(name string, value float64, labels ...string)
 }
 
 // Timer defines a simple timer interface for metrics, compatible with server.Timer.
