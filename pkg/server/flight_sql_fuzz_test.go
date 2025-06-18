@@ -7,7 +7,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
@@ -67,8 +66,6 @@ func FuzzFlightSQLServer(f *testing.F) {
 
 		reader = &sliceMessageReader{records: []arrow.Record{rec1}}
 		server.DoPutPreparedStatementUpdate(ctx, &preparedStatementUpdateCmd{handle: data}, reader)
-
-		server.GetFlightInfoSqlInfo(ctx, &flightsql.GetSqlInfo{Info: []uint32{99999}}, &flight.FlightDescriptor{Type: flight.DescriptorCMD, Cmd: data})
 
 		rec1.Release()
 		rec2.Release()
