@@ -43,6 +43,10 @@ type MetadataHandler interface {
 	// GetTables returns available tables.
 	GetTables(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, tableTypes []string, includeSchema bool) (*arrow.Schema, <-chan flight.StreamChunk, error)
 
+	// GetColumns returns columns for a specific table. Column and table patterns
+	// are currently not supported and must reference an exact table name.
+	GetColumns(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
 	// GetSchemas returns schemas matching the filter.
 	GetSchemas(ctx context.Context, catalog *string, schemaPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 

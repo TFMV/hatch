@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -221,6 +222,109 @@ func (h *metadataHandler) GetTables(ctx context.Context, catalog *string, schema
 	}()
 
 	return schema, chunks, nil
+}
+
+// GetColumns returns columns for a specific table. Wildcard patterns are currently
+// unsupported and only exact table names are handled.
+func (h *metadataHandler) GetColumns(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := h.metrics.StartTimer("handler_get_columns")
+	defer timer.Stop()
+
+	h.logger.Debug("Getting columns",
+		"catalog", catalog,
+		"schema_pattern", schemaPattern,
+		"table_pattern", tablePattern,
+		"column_pattern", columnPattern,
+	)
+
+	// Only exact table names are supported at the repository layer.
+	if tablePattern == nil || *tablePattern == "" || *tablePattern == "%" {
+		// TODO: support pattern matching for tables
+		ch := make(chan flight.StreamChunk)
+		close(ch)
+		return models.GetColumnsSchema(), ch, nil
+	}
+
+	tableRef := models.TableRef{
+		Catalog:  catalog,
+		DBSchema: schemaPattern,
+		Table:    *tablePattern,
+	}
+
+	cols, err := h.metadataService.GetColumns(ctx, tableRef)
+	if err != nil {
+		h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_columns")
+		return nil, nil, fmt.Errorf("failed to get columns: %w", err)
+	}
+
+	// Filter columns by column name pattern if provided (basic prefix match)
+	if columnPattern != nil && *columnPattern != "" && *columnPattern != "%" {
+		pat := strings.TrimSuffix(*columnPattern, "%")
+		filtered := cols[:0]
+		for _, c := range cols {
+			if strings.HasPrefix(c.Name, pat) {
+				filtered = append(filtered, c)
+			}
+		}
+		cols = filtered
+	}
+
+	schema := models.GetColumnsSchema()
+	ch := make(chan flight.StreamChunk, 1)
+
+	go func() {
+		defer close(ch)
+
+		b := array.NewRecordBuilder(h.allocator, schema)
+		defer b.Release()
+
+		for _, col := range cols {
+			if col.CatalogName != "" {
+				b.Field(0).(*array.StringBuilder).Append(col.CatalogName)
+			} else {
+				b.Field(0).AppendNull()
+			}
+			b.Field(1).(*array.StringBuilder).Append(col.SchemaName)
+			b.Field(2).(*array.StringBuilder).Append(col.TableName)
+			b.Field(3).(*array.StringBuilder).Append(col.Name)
+			b.Field(4).(*array.Int32Builder).Append(int32(col.OrdinalPosition))
+			if col.DefaultValue.Valid {
+				b.Field(5).(*array.StringBuilder).Append(col.DefaultValue.String)
+			} else {
+				b.Field(5).AppendNull()
+			}
+			b.Field(6).(*array.BooleanBuilder).Append(col.IsNullable)
+			b.Field(7).(*array.StringBuilder).Append(col.DataType)
+			if col.CharMaxLength.Valid {
+				b.Field(8).(*array.Int64Builder).Append(col.CharMaxLength.Int64)
+			} else {
+				b.Field(8).AppendNull()
+			}
+			if col.NumericPrecision.Valid {
+				b.Field(9).(*array.Int64Builder).Append(col.NumericPrecision.Int64)
+			} else {
+				b.Field(9).AppendNull()
+			}
+			if col.NumericScale.Valid {
+				b.Field(10).(*array.Int64Builder).Append(col.NumericScale.Int64)
+			} else {
+				b.Field(10).AppendNull()
+			}
+			if col.DateTimePrecision.Valid {
+				b.Field(11).(*array.Int64Builder).Append(col.DateTimePrecision.Int64)
+			} else {
+				b.Field(11).AppendNull()
+			}
+		}
+
+		rec := b.NewRecord()
+		ch <- flight.StreamChunk{Data: rec}
+
+		h.logger.Info("Columns retrieved", "count", len(cols))
+		h.metrics.RecordHistogram("handler_columns_count", float64(len(cols)))
+	}()
+
+	return schema, ch, nil
 }
 
 // GetTableTypes returns available table types.

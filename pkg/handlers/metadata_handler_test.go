@@ -39,6 +39,14 @@ func (m *MockMetadataHandler) GetTables(ctx context.Context, catalog *string, sc
 	return args.Get(0).(*arrow.Schema), args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
 }
 
+func (m *MockMetadataHandler) GetColumns(ctx context.Context, catalog *string, schemaPattern *string, tablePattern *string, columnPattern *string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	args := m.Called(ctx, catalog, schemaPattern, tablePattern, columnPattern)
+	if args.Get(0) == nil {
+		return nil, args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
+	}
+	return args.Get(0).(*arrow.Schema), args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
+}
+
 func (m *MockMetadataHandler) GetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	args := m.Called(ctx)
 	if args.Get(0) == nil {

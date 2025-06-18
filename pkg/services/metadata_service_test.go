@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,6 +19,7 @@ type mockMetadataRepo struct {
 	getTablesFunc         func(ctx context.Context, opts models.GetTablesOptions) ([]models.Table, error)
 	getTableTypesFunc     func(ctx context.Context) ([]string, error)
 	getColumnsFunc        func(ctx context.Context, table models.TableRef) ([]models.Column, error)
+	getTableSchemaFunc    func(ctx context.Context, table models.TableRef) (*arrow.Schema, error)
 	getPrimaryKeysFunc    func(ctx context.Context, table models.TableRef) ([]models.Key, error)
 	getImportedKeysFunc   func(ctx context.Context, table models.TableRef) ([]models.ForeignKey, error)
 	getExportedKeysFunc   func(ctx context.Context, table models.TableRef) ([]models.ForeignKey, error)
@@ -44,6 +46,10 @@ func (m *mockMetadataRepo) GetTableTypes(ctx context.Context) ([]string, error) 
 
 func (m *mockMetadataRepo) GetColumns(ctx context.Context, table models.TableRef) ([]models.Column, error) {
 	return m.getColumnsFunc(ctx, table)
+}
+
+func (m *mockMetadataRepo) GetTableSchema(ctx context.Context, table models.TableRef) (*arrow.Schema, error) {
+	return m.getTableSchemaFunc(ctx, table)
 }
 
 func (m *mockMetadataRepo) GetPrimaryKeys(ctx context.Context, table models.TableRef) ([]models.Key, error) {
