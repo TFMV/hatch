@@ -191,9 +191,71 @@ func (r *metadataRepository) GetPrimaryKeys(ctx context.Context, ref models.Tabl
 
 	return out, nil
 }
-func (*metadataRepository) GetImportedKeys(context.Context, models.TableRef) ([]models.ForeignKey, error) {
-	// TODO: implement foreign key introspection once supported by DuckDB
-	return []models.ForeignKey{}, nil
+func (r *metadataRepository) GetImportedKeys(ctx context.Context, ref models.TableRef) ([]models.ForeignKey, error) {
+	// DuckDB exposes basic foreign key metadata via PRAGMA foreign_key_list.
+	// This only returns table-local information and does not include catalog
+	// or constraint names. We map the available columns to the ForeignKey
+	// model and leave catalog/schema information blank if not provided.
+
+	tbl := ref.Table
+	if s := strPtr(ref.DBSchema); s != "" {
+		tbl = fmt.Sprintf("%s.%s", s, tbl)
+	}
+
+	const q = "PRAGMA foreign_key_list(?)"
+
+	db, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, q, tbl)
+	if err != nil {
+		return nil, r.wrapDBErr(err, q)
+	}
+	defer rows.Close()
+
+	var fks []models.ForeignKey
+	fkCatalog := strPtr(ref.Catalog)
+	fkSchema := strPtr(ref.DBSchema)
+
+	for rows.Next() {
+		// DuckDB returns: id, seq, table, from, to, on_update, on_delete, match
+		var (
+			id       int32
+			seq      int32
+			pkTable  string
+			fkColumn string
+			pkColumn string
+			onUpdate string
+			onDelete string
+			match    string
+		)
+		if err := rows.Scan(&id, &seq, &pkTable, &fkColumn, &pkColumn, &onUpdate, &onDelete, &match); err != nil {
+			return nil, err
+		}
+
+		fks = append(fks, models.ForeignKey{
+			PKCatalogName: fkCatalog, // DuckDB currently lacks catalog info
+			PKSchemaName:  fkSchema,
+			PKTableName:   pkTable,
+			PKColumnName:  pkColumn,
+			FKCatalogName: fkCatalog,
+			FKSchemaName:  fkSchema,
+			FKTableName:   ref.Table,
+			FKColumnName:  fkColumn,
+			KeySequence:   seq + 1, // PRAGMA seq starts at 0
+			PKKeyName:     "",
+			FKKeyName:     "",
+			UpdateRule:    toFKRule(onUpdate),
+			DeleteRule:    toFKRule(onDelete),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// TODO: Resolve catalog and constraint names once DuckDB exposes them
+	return fks, nil
 }
 func (*metadataRepository) GetExportedKeys(context.Context, models.TableRef) ([]models.ForeignKey, error) {
 	// TODO: implement foreign key introspection once supported by DuckDB
@@ -490,4 +552,19 @@ func strPtr(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+func toFKRule(rule string) models.FKRule {
+	switch strings.ToUpper(rule) {
+	case "CASCADE":
+		return models.FKRuleCascade
+	case "RESTRICT":
+		return models.FKRuleRestrict
+	case "SET NULL":
+		return models.FKRuleSetNull
+	case "SET DEFAULT":
+		return models.FKRuleSetDefault
+	default:
+		return models.FKRuleNoAction
+	}
 }
