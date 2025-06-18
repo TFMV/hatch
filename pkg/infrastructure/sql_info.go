@@ -60,7 +60,7 @@ func (p *SQLInfoProvider) ensureInit() {
 		// Sorting / NULL ordering
 		add(flightsql.SqlInfoNullOrdering, int64(flightsql.SqlNullOrderingSortAtStart))
 
-		add(flightsql.SqlInfoAllTablesAreASelectable, true)
+		add(flightsql.SqlInfoAllTablesAreSelectable, true)
 		add(flightsql.SqlInfoTransactionsSupported, true)
 
 		// Keywords / functions (pre‑allocated capacity improves append perf)
