@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/apache/arrow-go/v18/arrow"
+
 	"github.com/TFMV/hatch/pkg/models"
 )
 
@@ -44,6 +46,8 @@ type MetadataRepository interface {
 	GetTableTypes(ctx context.Context) ([]string, error)
 	// GetColumns returns columns for a specific table.
 	GetColumns(ctx context.Context, table models.TableRef) ([]models.Column, error)
+	// GetTableSchema returns the Arrow schema for a table.
+	GetTableSchema(ctx context.Context, table models.TableRef) (*arrow.Schema, error)
 	// GetPrimaryKeys returns primary keys for a table.
 	GetPrimaryKeys(ctx context.Context, table models.TableRef) ([]models.Key, error)
 	// GetImportedKeys returns foreign keys that reference a table.
