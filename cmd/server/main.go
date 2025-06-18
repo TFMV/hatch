@@ -36,6 +36,8 @@ import (
 	"github.com/TFMV/hatch/pkg/repositories/duckdb"
 	"github.com/TFMV/hatch/pkg/services"
 
+	"github.com/TFMV/hatch/cmd/server/middleware"
+
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
@@ -121,6 +123,11 @@ type EnterpriseFlightSQLServer struct {
 	logger    zerolog.Logger
 	allocator memory.Allocator
 	metrics   metrics.Collector
+
+	authMW    *middleware.AuthMiddleware
+	logMW     *middleware.LoggingMiddleware
+	metricsMW *middleware.MetricsMiddleware
+	recoverMW *middleware.RecoveryMiddleware
 
 	// Core components
 	pool        pool.ConnectionPool
@@ -328,6 +335,12 @@ func createEnterpriseServer(cfg *config.Config, logger zerolog.Logger, metricsCo
 	memCache := cache.NewMemoryCache(cfg.Cache.MaxSize, allocator)
 	cacheKeyGen := &cache.DefaultCacheKeyGenerator{}
 
+	// Middleware
+	authMW := middleware.NewAuthMiddleware(cfg.Auth, logger.With().Str("component", "auth_middleware").Logger())
+	logMW := middleware.NewLoggingMiddleware(logger.With().Str("component", "logging_middleware").Logger())
+	metricsMW := middleware.NewMetricsMiddleware(metricsCollector)
+	recoverMW := middleware.NewRecoveryMiddleware(logger.With().Str("component", "recovery_middleware").Logger())
+
 	// Create enterprise server
 	server := &EnterpriseFlightSQLServer{
 		BaseServer: flightsql.BaseServer{
@@ -336,6 +349,10 @@ func createEnterpriseServer(cfg *config.Config, logger zerolog.Logger, metricsCo
 		logger:                   logger,
 		allocator:                allocator,
 		metrics:                  metricsCollector,
+		authMW:                   authMW,
+		logMW:                    logMW,
+		metricsMW:                metricsMW,
+		recoverMW:                recoverMW,
 		pool:                     connPool,
 		memoryCache:              memCache,
 		cacheKeyGen:              cacheKeyGen,
@@ -376,8 +393,19 @@ func (s *EnterpriseFlightSQLServer) Register(grpcServer *grpc.Server) {
 
 // GetMiddleware returns enterprise-grade gRPC middleware
 func (s *EnterpriseFlightSQLServer) GetMiddleware() []grpc.ServerOption {
-	// Add enterprise middleware here (auth, rate limiting, etc.)
-	return []grpc.ServerOption{}
+	unary := grpc.ChainUnaryInterceptor(
+		s.recoverMW.UnaryInterceptor(),
+		s.logMW.UnaryInterceptor(),
+		s.metricsMW.UnaryInterceptor(),
+		s.authMW.UnaryInterceptor(),
+	)
+	stream := grpc.ChainStreamInterceptor(
+		s.recoverMW.StreamInterceptor(),
+		s.logMW.StreamInterceptor(),
+		s.metricsMW.StreamInterceptor(),
+		s.authMW.StreamInterceptor(),
+	)
+	return []grpc.ServerOption{unary, stream}
 }
 
 func loadConfig(cmd *cobra.Command) (*config.Config, error) {
@@ -558,6 +586,23 @@ func (s *EnterpriseFlightSQLServer) registerSqlInfo() error {
 	}
 
 	return nil
+}
+
+// Handshake implements the Flight authentication handshake.
+func (s *EnterpriseFlightSQLServer) Handshake(stream flight.FlightService_HandshakeServer) error {
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	user, err := s.authMW.ValidateHandshakePayload(req.Payload)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("handshake failed")
+		return status.Error(codes.Unauthenticated, "handshake failed")
+	}
+	token := s.authMW.CreateSessionToken(user)
+	s.logger.Info().Str("user", user).Msg("handshake authenticated")
+	resp := &flight.HandshakeResponse{Payload: []byte(token)}
+	return stream.Send(resp)
 }
 
 // FlightSQL interface implementations

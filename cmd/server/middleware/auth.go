@@ -53,13 +53,15 @@ type authorizationCode struct {
 
 // AuthMiddleware provides authentication middleware.
 type AuthMiddleware struct {
-	config     config.AuthConfig
-	logger     zerolog.Logger
-	HSKey      []byte
-	RSKey      interface{}
-	Iss        string
-	Aud        string
-	tokenStore *TokenStore
+	config        config.AuthConfig
+	logger        zerolog.Logger
+	HSKey         []byte
+	RSKey         interface{}
+	Iss           string
+	Aud           string
+	tokenStore    *TokenStore
+	sessionTokens map[string]string
+	mu            sync.RWMutex
 }
 
 // NewAuthMiddleware creates a new authentication middleware.
@@ -72,6 +74,7 @@ func NewAuthMiddleware(cfg config.AuthConfig, logger zerolog.Logger) *AuthMiddle
 			refreshTokens:     make(map[string]*OAuth2Token),
 			authorizationCode: make(map[string]authorizationCode),
 		},
+		sessionTokens: make(map[string]string),
 	}
 
 	// Initialize JWT-related fields if JWT auth is enabled
@@ -217,10 +220,15 @@ func (m *AuthMiddleware) authenticateBearer(ctx context.Context) (context.Contex
 
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Validate token
+	// Validate token against configured tokens or session tokens
 	username, ok := m.config.BearerAuth.Tokens[token]
 	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "invalid token")
+		m.mu.RLock()
+		username, ok = m.sessionTokens[token]
+		m.mu.RUnlock()
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "invalid token")
+		}
 	}
 
 	// Add user info to context
@@ -560,6 +568,52 @@ func generateRandomString(length int) string {
 		return ""
 	}
 	return hex.EncodeToString(b)
+}
+
+// ----- Handshake helpers ----------------------------------------------------
+
+// ValidateHandshakePayload validates the handshake payload and returns the
+// authenticated user identity.
+func (m *AuthMiddleware) ValidateHandshakePayload(payload []byte) (string, error) {
+	if !m.config.Enabled {
+		return "", nil
+	}
+	switch m.config.Type {
+	case "basic":
+		decoded, err := base64.StdEncoding.DecodeString(string(payload))
+		if err != nil {
+			return "", fmt.Errorf("invalid credentials encoding")
+		}
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			return "", fmt.Errorf("invalid credentials format")
+		}
+		user := parts[0]
+		pass := parts[1]
+		info, ok := m.config.BasicAuth.Users[user]
+		if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(info.Password)) != 1 {
+			return "", fmt.Errorf("invalid credentials")
+		}
+		return user, nil
+	case "bearer":
+		token := string(payload)
+		user, ok := m.config.BearerAuth.Tokens[token]
+		if !ok {
+			return "", fmt.Errorf("invalid token")
+		}
+		return user, nil
+	default:
+		return "", fmt.Errorf("handshake not supported for %s", m.config.Type)
+	}
+}
+
+// CreateSessionToken stores a new session token for the given user.
+func (m *AuthMiddleware) CreateSessionToken(user string) string {
+	token := generateRandomString(32)
+	m.mu.Lock()
+	m.sessionTokens[token] = user
+	m.mu.Unlock()
+	return token
 }
 
 // Context keys for authentication
