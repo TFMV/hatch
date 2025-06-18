@@ -1,24 +1,24 @@
-# Hatch
+# Porter
 
 *Zero‑copy analytics, delivered at Mach Arrow.*
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/hatch)](https://goreportcard.com/report/github.com/TFMV/hatch)
+[![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/porter)](https://goreportcard.com/report/github.com/TFMV/porter)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Build and Test](https://github.com/TFMV/hatch/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/hatch/actions/workflows/ci.yml)
+[![Build and Test](https://github.com/TFMV/porter/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/porter/actions/workflows/ci.yml)
 
 > **Status: Experimental**  
-> Hatch is under **active development** and is currently **experimental**.  
+> Porter is under **active development** and is currently **experimental**.  
 > It is **not yet ready for production use**. APIs may change, and features may be incomplete.
 > 
 > For a stable Flight SQL implementation, see [GizmoSQL](https://github.com/gizmodata/gizmosql).
 
 ---
 
-## What is Hatch?
+## What is Porter?
 
-Hatch is a **high-performance Flight SQL server** powered by DuckDB that makes Arrow-native analytics effortless. It bridges the gap between DuckDB's incredible analytical capabilities and modern data infrastructure by speaking the Flight SQL protocol natively.
+Porter is a **high-performance Flight SQL server** that makes Arrow-native analytics effortless. It provides a flexible abstraction layer for different database backends, currently supporting DuckDB with plans to add more (like ClickHouse). It bridges the gap between analytical databases and modern data infrastructure by speaking the Flight SQL protocol natively.
 
-Think of it as **DuckDB with wings** – all the analytical power you love, now network-accessible with zero-copy Arrow streaming.
+Think of it as **analytics with wings** – all the analytical power you love, now network-accessible with zero-copy Arrow streaming.
 
 ## Key Features
 
@@ -38,15 +38,15 @@ Think of it as **DuckDB with wings** – all the analytical power you love, now 
 ### Standards Compliant
 - **Apache Arrow Flight SQL** protocol
 - **JDBC/ODBC compatibility** through Flight SQL drivers
-- **SQL standard compliance** via DuckDB
+- **SQL standard compliance** via database backends
 - **Cross-platform** support (Linux, macOS, Windows)
 
 ## Architecture
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Flight SQL    │    │      Hatch       │    │     DuckDB      │
-│    Clients      │◄──►│   Flight SQL     │◄──►│    Database     │
+│   Flight SQL    │    │     Porter       │    │    Database     │
+│    Clients      │◄──►│   Flight SQL     │◄──►│    Backends     │
 │                 │    │     Server       │    │                 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
         │                        │                        │
@@ -59,7 +59,7 @@ Think of it as **DuckDB with wings** – all the analytical power you love, now 
 
 **Core Components:**
 - **Flight SQL Handler** – Protocol implementation and query routing
-- **DuckDB Integration** – High-performance analytical query engine  
+- **Database Backends** – Flexible abstraction for different databases (DuckDB, ClickHouse, etc.)
 - **Connection Pool** – Efficient database connection management
 - **Cache Layer** – Smart caching for schemas and query results
 - **Metrics Collection** – Comprehensive observability and monitoring
@@ -75,28 +75,28 @@ Think of it as **DuckDB with wings** – all the analytical power you love, now 
 
 #### Option 1: Build from Source
 ```bash
-git clone https://github.com/TFMV/hatch.git
-cd hatch
+git clone https://github.com/TFMV/porter.git
+cd porter
 make build
 ```
 
 #### Option 2: Using Go Install
 ```bash
-go install github.com/TFMV/hatch/cmd/server@latest
+go install github.com/TFMV/porter/cmd/server@latest
 ```
 
-### Running Hatch
+### Running Porter
 
 #### Basic Usage
 ```bash
 # Start with in-memory database
-./hatch serve
+./porter serve
 
 # Start with persistent database
-./hatch serve --database ./my-data.db --address 0.0.0.0:32010
+./porter serve --database ./my-data.db --address 0.0.0.0:32010
 
 # Start with configuration file
-./hatch serve --config ./config.yaml
+./porter serve --config ./config.yaml
 ```
 
 #### Using Docker
@@ -108,7 +108,7 @@ make docker-build
 make docker-run
 
 # Or run directly
-docker run -p 32010:32010 -p 9090:9090 hatch:latest
+docker run -p 32010:32010 -p 9090:9090 porter:latest
 ```
 
 ### Configuration
@@ -148,13 +148,13 @@ auth:
   type: "oauth2"
 ```
 
-## Connecting to Hatch
+## Connecting to Porter
 
 ### Python (using ADBC)
 ```python
 import adbc_driver_flightsql.dbapi
 
-# Connect to Hatch
+# Connect to Porter
 conn = adbc_driver_flightsql.dbapi.connect(
     "grpc://localhost:32010"
 )
@@ -169,7 +169,7 @@ results = cursor.fetchall()
 ```python
 from pyarrow import flight
 
-# Connect to Hatch Flight SQL server
+# Connect to Porter Flight SQL server
 client = flight.FlightClient("grpc://localhost:32010")
 
 # Execute query and get results as Arrow table
@@ -230,7 +230,7 @@ make run
 ## Monitoring & Observability
 
 ### Metrics
-Hatch exposes Prometheus metrics on `:9090` by default:
+Porter exposes Prometheus metrics on `:9090` by default:
 
 - **Query Performance**: Execution time, throughput, error rates
 - **Connection Pool**: Active connections, wait times, health status  
@@ -251,31 +251,31 @@ curl http://localhost:9090/metrics
 Structured logging with configurable levels:
 ```bash
 # Set log level
-export HATCH_LOG_LEVEL=debug
+export PORTER_LOG_LEVEL=debug
 
 # JSON format (default)
-export HATCH_LOG_FORMAT=json
+export PORTER_LOG_FORMAT=json
 
 # Human-readable format
-export HATCH_LOG_FORMAT=console
+export PORTER_LOG_FORMAT=console
 ```
 
 ## Advanced Configuration
 
 ### Environment Variables
-All configuration options can be set via environment variables with the `HATCH_` prefix:
+All configuration options can be set via environment variables with the `PORTER_` prefix:
 
 ```bash
-export HATCH_ADDRESS="0.0.0.0:32010"
-export HATCH_DATABASE=":memory:"
-export HATCH_LOG_LEVEL="debug"
-export HATCH_METRICS_ENABLED="true"
-export HATCH_MAX_CONNECTIONS="100"
+export PORTER_ADDRESS="0.0.0.0:32010"
+export PORTER_DATABASE=":memory:"
+export PORTER_LOG_LEVEL="debug"
+export PORTER_METRICS_ENABLED="true"
+export PORTER_MAX_CONNECTIONS="100"
 ```
 
 ### Command Line Options
 ```bash
-./hatch serve --help
+./porter serve --help
 
 # Key options:
 --address string              Server listen address (default "0.0.0.0:32010")
@@ -291,7 +291,7 @@ export HATCH_MAX_CONNECTIONS="100"
 
 ## Contributing
 
-We welcome contributions! Hatch is designed to be extensible and community-driven.
+We welcome contributions! Porter is designed to be extensible and community-driven.
 
 ### Areas for Contribution
 - **Performance optimizations** and benchmarking
@@ -304,8 +304,8 @@ We welcome contributions! Hatch is designed to be extensible and community-drive
 ### Development Setup
 ```bash
 # Clone the repository
-git clone https://github.com/TFMV/hatch.git
-cd hatch
+git clone https://github.com/TFMV/porter.git
+cd porter
 
 # Install dependencies
 go mod download
@@ -315,13 +315,13 @@ make test
 
 # Build and run
 make build
-./hatch serve
+./porter serve
 ```
 
 ## Documentation
 
 - **[Flight SQL Protocol](docs/flightsql-manifest.md)** - Protocol specification and implementation details
-- **[Architecture Guide](docs/README.md)** - Deep dive into Hatch's architecture
+- **[Architecture Guide](docs/README.md)** - Deep dive into Porter's architecture
 - **[API Reference](pkg/)** - Go package documentation
 - **[Configuration Reference](config/)** - Complete configuration options
 
