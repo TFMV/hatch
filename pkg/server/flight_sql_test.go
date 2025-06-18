@@ -94,9 +94,11 @@ func (m *mockTransactionHandler) Rollback(ctx context.Context, txnID string) err
 
 type mockPreparedStatementHandler struct {
 	handlers.PreparedStatementHandler
-	createFunc    func(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error)
-	closeFunc     func(ctx context.Context, handle string) error
-	getSchemaFunc func(ctx context.Context, handle string) (*arrow.Schema, error)
+	createFunc        func(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error)
+	closeFunc         func(ctx context.Context, handle string) error
+	getSchemaFunc     func(ctx context.Context, handle string) (*arrow.Schema, error)
+	setParametersFunc func(ctx context.Context, handle string, params arrow.Record) error
+	executeUpdateFunc func(ctx context.Context, handle string, params arrow.Record) (int64, error)
 }
 
 func (m *mockPreparedStatementHandler) Create(ctx context.Context, query string, txnID string) (string, *arrow.Schema, error) {
@@ -109,6 +111,14 @@ func (m *mockPreparedStatementHandler) Close(ctx context.Context, handle string)
 
 func (m *mockPreparedStatementHandler) GetSchema(ctx context.Context, handle string) (*arrow.Schema, error) {
 	return m.getSchemaFunc(ctx, handle)
+}
+
+func (m *mockPreparedStatementHandler) SetParameters(ctx context.Context, handle string, params arrow.Record) error {
+	return m.setParametersFunc(ctx, handle, params)
+}
+
+func (m *mockPreparedStatementHandler) ExecuteUpdate(ctx context.Context, handle string, params arrow.Record) (int64, error) {
+	return m.executeUpdateFunc(ctx, handle, params)
 }
 
 type mockCache struct {
@@ -294,6 +304,38 @@ func (a *actionCreatePreparedStatementRequest) GetQuery() string {
 func (a *actionCreatePreparedStatementRequest) GetTransactionId() []byte {
 	return a.transactionID
 }
+
+// preparedStatementQueryCmd implements flightsql.PreparedStatementQuery
+type preparedStatementQueryCmd struct {
+	handle []byte
+}
+
+func (p *preparedStatementQueryCmd) GetPreparedStatementHandle() []byte { return p.handle }
+
+// preparedStatementUpdateCmd implements flightsql.PreparedStatementUpdate
+type preparedStatementUpdateCmd struct {
+	handle []byte
+}
+
+func (p *preparedStatementUpdateCmd) GetPreparedStatementHandle() []byte { return p.handle }
+
+type sliceMessageReader struct {
+	records []arrow.Record
+	idx     int
+}
+
+func (r *sliceMessageReader) Read() (arrow.Record, error) {
+	if r.idx >= len(r.records) {
+		return nil, io.EOF
+	}
+	rec := r.records[r.idx]
+	r.idx++
+	return rec, nil
+}
+
+type nopMetadataWriter struct{}
+
+func (nopMetadataWriter) WriteMetadata([]byte) error { return nil }
 
 func TestGetFlightInfoStatement(t *testing.T) {
 	server, queryHandler, _, _, _ := setupTestServer(t)
@@ -641,4 +683,131 @@ func TestCreatePreparedStatement(t *testing.T) {
 		assert.Empty(t, result.Handle)
 		assert.Nil(t, result.DatasetSchema)
 	})
+}
+
+func TestDoPutPreparedStatementQuery(t *testing.T) {
+	server, _, _, _, psHandler := setupTestServer(t)
+
+	allocator := memory.NewGoAllocator()
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+
+	builder := array.NewRecordBuilder(allocator, schema)
+	builder.Field(0).(*array.Int64Builder).Append(int64(42))
+	rec := builder.NewRecord()
+	builder.Release()
+
+	reader := &sliceMessageReader{records: []arrow.Record{rec}}
+	writer := nopMetadataWriter{}
+
+	var captured arrow.Record
+	psHandler.setParametersFunc = func(ctx context.Context, handle string, params arrow.Record) error {
+		captured = params
+		return nil
+	}
+
+	handle := []byte("stmt-query")
+	cmd := &preparedStatementQueryCmd{handle: handle}
+	resp, err := server.DoPutPreparedStatementQuery(context.Background(), cmd, reader, writer)
+	require.NoError(t, err)
+	assert.Equal(t, handle, resp)
+	require.NotNil(t, captured)
+	assert.Equal(t, int64(1), captured.NumRows())
+
+	captured.Release()
+	rec.Release()
+}
+
+func TestDoPutPreparedStatementQuery_Errors(t *testing.T) {
+	server, _, _, _, psHandler := setupTestServer(t)
+	allocator := memory.NewGoAllocator()
+
+	schema1 := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b1 := array.NewRecordBuilder(allocator, schema1)
+	b1.Field(0).(*array.Int64Builder).Append(int64(1))
+	rec1 := b1.NewRecord()
+	b1.Release()
+
+	schema2 := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Float64}}, nil)
+	b2 := array.NewRecordBuilder(allocator, schema2)
+	b2.Field(0).(*array.Float64Builder).Append(1.0)
+	rec2 := b2.NewRecord()
+	b2.Release()
+
+	t.Run("schema mismatch", func(t *testing.T) {
+		reader := &sliceMessageReader{records: []arrow.Record{rec1, rec2}}
+		writer := nopMetadataWriter{}
+		psHandler.setParametersFunc = func(ctx context.Context, handle string, params arrow.Record) error { return nil }
+		_, err := server.DoPutPreparedStatementQuery(context.Background(), &preparedStatementQueryCmd{handle: []byte("ps")}, reader, writer)
+		assert.Error(t, err)
+	})
+
+	t.Run("set parameters error", func(t *testing.T) {
+		reader := &sliceMessageReader{records: []arrow.Record{rec1}}
+		writer := nopMetadataWriter{}
+		psHandler.setParametersFunc = func(ctx context.Context, handle string, params arrow.Record) error { return assert.AnError }
+		_, err := server.DoPutPreparedStatementQuery(context.Background(), &preparedStatementQueryCmd{handle: []byte("ps")}, reader, writer)
+		assert.Error(t, err)
+	})
+
+	rec1.Release()
+	rec2.Release()
+}
+
+func TestDoPutPreparedStatementUpdate(t *testing.T) {
+	server, _, _, _, psHandler := setupTestServer(t)
+	allocator := memory.NewGoAllocator()
+
+	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b := array.NewRecordBuilder(allocator, schema)
+	b.Field(0).(*array.Int64Builder).Append(int64(7))
+	rec := b.NewRecord()
+	b.Release()
+
+	psHandler.executeUpdateFunc = func(ctx context.Context, handle string, params arrow.Record) (int64, error) {
+		require.NotNil(t, params)
+		return 5, nil
+	}
+
+	reader := &sliceMessageReader{records: []arrow.Record{rec}}
+	affected, err := server.DoPutPreparedStatementUpdate(context.Background(), &preparedStatementUpdateCmd{handle: []byte("ps")}, reader)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), affected)
+
+	rec.Release()
+}
+
+func TestDoPutPreparedStatementUpdate_Errors(t *testing.T) {
+	server, _, _, _, psHandler := setupTestServer(t)
+	allocator := memory.NewGoAllocator()
+
+	schema1 := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	b1 := array.NewRecordBuilder(allocator, schema1)
+	b1.Field(0).(*array.Int64Builder).Append(int64(1))
+	rec1 := b1.NewRecord()
+	b1.Release()
+
+	schema2 := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
+	b2 := array.NewRecordBuilder(allocator, schema2)
+	b2.Field(0).(*array.Float64Builder).Append(1.0)
+	rec2 := b2.NewRecord()
+	b2.Release()
+
+	t.Run("schema mismatch", func(t *testing.T) {
+		reader := &sliceMessageReader{records: []arrow.Record{rec1, rec2}}
+		psHandler.executeUpdateFunc = func(ctx context.Context, handle string, params arrow.Record) (int64, error) { return 0, nil }
+		_, err := server.DoPutPreparedStatementUpdate(context.Background(), &preparedStatementUpdateCmd{handle: []byte("ps")}, reader)
+		assert.Error(t, err)
+	})
+
+	t.Run("execute error", func(t *testing.T) {
+		reader := &sliceMessageReader{records: []arrow.Record{rec1}}
+		psHandler.executeUpdateFunc = func(ctx context.Context, handle string, params arrow.Record) (int64, error) { return 0, assert.AnError }
+		_, err := server.DoPutPreparedStatementUpdate(context.Background(), &preparedStatementUpdateCmd{handle: []byte("ps")}, reader)
+		assert.Error(t, err)
+	})
+
+	rec1.Release()
+	rec2.Release()
 }
