@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -322,6 +323,7 @@ func (p *preparedStatementUpdateCmd) GetPreparedStatementHandle() []byte { retur
 type sliceMessageReader struct {
 	records []arrow.Record
 	idx     int
+	schema  *arrow.Schema
 }
 
 func (r *sliceMessageReader) Read() (arrow.Record, error) {
@@ -331,6 +333,52 @@ func (r *sliceMessageReader) Read() (arrow.Record, error) {
 	rec := r.records[r.idx]
 	r.idx++
 	return rec, nil
+}
+
+func (r *sliceMessageReader) Schema() *arrow.Schema {
+	return r.schema
+}
+
+func (r *sliceMessageReader) Next() bool {
+	return r.idx < len(r.records)
+}
+
+func (r *sliceMessageReader) Record() arrow.Record {
+	if r.idx > 0 && r.idx <= len(r.records) {
+		return r.records[r.idx-1]
+	}
+	return nil
+}
+
+func (r *sliceMessageReader) Err() error {
+	return nil
+}
+
+func (r *sliceMessageReader) Chunk() flight.StreamChunk {
+	if r.idx > 0 && r.idx <= len(r.records) {
+		return flight.StreamChunk{Data: r.records[r.idx-1]}
+	}
+	return flight.StreamChunk{}
+}
+
+func (r *sliceMessageReader) LatestFlightDescriptor() *flight.FlightDescriptor {
+	return nil
+}
+
+func (r *sliceMessageReader) LatestAppMetadata() []byte {
+	return nil
+}
+
+func (r *sliceMessageReader) Release() {
+	for _, rec := range r.records {
+		rec.Release()
+	}
+}
+
+func (r *sliceMessageReader) Retain() {
+	for _, rec := range r.records {
+		rec.Retain()
+	}
 }
 
 type nopMetadataWriter struct{}
