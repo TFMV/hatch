@@ -348,35 +348,6 @@ func (s *FlightSQLServer) DoGetTableTypes(
 	return s.metadataHandler.GetTableTypes(ctx)
 }
 
-func (s *FlightSQLServer) GetFlightInfoColumns(
-	ctx context.Context,
-	cmd flightsql.GetColumns,
-	desc *flight.FlightDescriptor,
-) (*flight.FlightInfo, error) {
-	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
-		return s.metadataHandler.GetColumns(
-			ctx,
-			cmd.GetCatalog(),
-			cmd.GetDBSchemaFilterPattern(),
-			cmd.GetTableNameFilterPattern(),
-			cmd.GetColumnNameFilterPattern(),
-		)
-	})
-}
-
-func (s *FlightSQLServer) DoGetColumns(
-	ctx context.Context,
-	cmd flightsql.GetColumns,
-) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return s.metadataHandler.GetColumns(
-		ctx,
-		cmd.GetCatalog(),
-		cmd.GetDBSchemaFilterPattern(),
-		cmd.GetTableNameFilterPattern(),
-		cmd.GetColumnNameFilterPattern(),
-	)
-}
-
 func (s *FlightSQLServer) GetFlightInfoPrimaryKeys(
 	ctx context.Context,
 	cmd flightsql.TableRef,
