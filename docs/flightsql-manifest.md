@@ -13,7 +13,7 @@
 
 ## Execution RPCs
 - [x] DoGet
-- [~] DoPut
+- [x] DoPut
  - [~] DoExchange
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
