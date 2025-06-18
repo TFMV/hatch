@@ -437,6 +437,31 @@ func (s *FlightSQLServer) DoGetExportedKeys(
 	return s.metadataHandler.GetExportedKeys(ctx, cmd.Catalog, cmd.DBSchema, cmd.Table)
 }
 
+func (s *FlightSQLServer) GetFlightInfoCrossReference(
+	ctx context.Context,
+	cmd flightsql.CrossReference,
+	desc *flight.FlightDescriptor,
+) (*flight.FlightInfo, error) {
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetCrossReference(
+			ctx,
+			cmd.PkCatalog, cmd.PkDbSchema, cmd.PkTable,
+			cmd.FkCatalog, cmd.FkDbSchema, cmd.FkTable,
+		)
+	})
+}
+
+func (s *FlightSQLServer) DoGetCrossReference(
+	ctx context.Context,
+	cmd flightsql.CrossReference,
+) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	return s.metadataHandler.GetCrossReference(
+		ctx,
+		cmd.PkCatalog, cmd.PkDbSchema, cmd.PkTable,
+		cmd.FkCatalog, cmd.FkDbSchema, cmd.FkTable,
+	)
+}
+
 func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(
 	ctx context.Context,
 	cmd flightsql.GetXdbcTypeInfo,

@@ -71,6 +71,14 @@ func (m *MockMetadataHandler) GetExportedKeys(ctx context.Context, catalog *stri
 	return args.Get(0).(*arrow.Schema), args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
 }
 
+func (m *MockMetadataHandler) GetCrossReference(ctx context.Context, pkCatalog *string, pkSchema *string, pkTable string, fkCatalog *string, fkSchema *string, fkTable string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	args := m.Called(ctx, pkCatalog, pkSchema, pkTable, fkCatalog, fkSchema, fkTable)
+	if args.Get(0) == nil {
+		return nil, args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
+	}
+	return args.Get(0).(*arrow.Schema), args.Get(1).(<-chan flight.StreamChunk), args.Error(2)
+}
+
 func (m *MockMetadataHandler) GetXdbcTypeInfo(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	args := m.Called(ctx, dataType)
 	if args.Get(0) == nil {

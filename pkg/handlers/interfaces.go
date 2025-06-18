@@ -58,6 +58,13 @@ type MetadataHandler interface {
 	// GetExportedKeys returns exported foreign keys for a table.
 	GetExportedKeys(ctx context.Context, catalog *string, schema *string, table string) (*arrow.Schema, <-chan flight.StreamChunk, error)
 
+	// GetCrossReference returns foreign key relationships between two tables.
+	GetCrossReference(
+		ctx context.Context,
+		pkCatalog *string, pkSchema *string, pkTable string,
+		fkCatalog *string, fkSchema *string, fkTable string,
+	) (*arrow.Schema, <-chan flight.StreamChunk, error)
+
 	// GetXdbcTypeInfo returns XDBC type information.
 	GetXdbcTypeInfo(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error)
 }
