@@ -409,6 +409,50 @@ func (h *metadataHandler) GetExportedKeys(ctx context.Context, catalog *string, 
 	return arrowSchema, chunks, nil
 }
 
+// GetCrossReference returns foreign key relationships between two tables.
+func (h *metadataHandler) GetCrossReference(
+	ctx context.Context,
+	pkCatalog *string, pkSchema *string, pkTable string,
+	fkCatalog *string, fkSchema *string, fkTable string,
+) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := h.metrics.StartTimer("handler_get_cross_reference")
+	defer timer.Stop()
+
+	h.logger.Debug("Getting cross reference",
+		"pk_catalog", pkCatalog,
+		"pk_schema", pkSchema,
+		"pk_table", pkTable,
+		"fk_catalog", fkCatalog,
+		"fk_schema", fkSchema,
+		"fk_table", fkTable,
+	)
+
+	ref := models.CrossTableRef{
+		PKRef: models.TableRef{Catalog: pkCatalog, DBSchema: pkSchema, Table: pkTable},
+		FKRef: models.TableRef{Catalog: fkCatalog, DBSchema: fkSchema, Table: fkTable},
+	}
+
+	keys, err := h.metadataService.GetCrossReference(ctx, ref)
+	if err != nil {
+		h.metrics.IncrementCounter("handler_metadata_errors", "operation", "get_cross_reference")
+		return nil, nil, fmt.Errorf("failed to get cross reference: %w", err)
+	}
+
+	schema := models.GetForeignKeysSchema()
+	ch := make(chan flight.StreamChunk, 1)
+
+	go func() {
+		defer close(ch)
+		rec := h.createForeignKeyRecord(schema, keys)
+		ch <- flight.StreamChunk{Data: rec}
+
+		h.logger.Info("Cross reference retrieved", "count", len(keys))
+		h.metrics.RecordHistogram("handler_cross_reference_count", float64(len(keys)))
+	}()
+
+	return schema, ch, nil
+}
+
 // GetXdbcTypeInfo returns XDBC type information.
 func (h *metadataHandler) GetXdbcTypeInfo(ctx context.Context, dataType *int32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	timer := h.metrics.StartTimer("handler_get_xdbc_type_info")
