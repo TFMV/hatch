@@ -15,10 +15,29 @@ import (
 func FuzzFlightSQLServer(f *testing.F) {
 	f.Add([]byte("SELECT 1"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		server, _, metadataHandler, _, psHandler := setupTestServer(t)
+		server, queryHandler, metadataHandler, _, psHandler := setupTestServer(t)
 		allocator := memory.NewGoAllocator()
 
 		// safe defaults for handlers
+		queryHandler.getFlightInfoFunc = func(ctx context.Context, query string) (*flight.FlightInfo, error) {
+			schema := arrow.NewSchema([]arrow.Field{{Name: "result", Type: arrow.PrimitiveTypes.Int32}}, nil)
+			desc := &flight.FlightDescriptor{Type: flight.DescriptorCMD, Cmd: []byte(query)}
+			return &flight.FlightInfo{
+				Schema:           flight.SerializeSchema(schema, allocator),
+				FlightDescriptor: desc,
+				Endpoint: []*flight.FlightEndpoint{{
+					Ticket: &flight.Ticket{Ticket: desc.Cmd},
+				}},
+				TotalRecords: -1,
+				TotalBytes:   -1,
+			}, nil
+		}
+		queryHandler.executeStatementFunc = func(ctx context.Context, query string, txnID string) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+			schema := arrow.NewSchema([]arrow.Field{{Name: "result", Type: arrow.PrimitiveTypes.Int32}}, nil)
+			ch := make(chan flight.StreamChunk)
+			close(ch)
+			return schema, ch, nil
+		}
 		metadataHandler.getSqlInfoFunc = func(ctx context.Context, info []uint32) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 			schema := arrow.NewSchema([]arrow.Field{{Name: "k", Type: arrow.PrimitiveTypes.Int32}}, nil)
 			ch := make(chan flight.StreamChunk)
