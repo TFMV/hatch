@@ -2,63 +2,55 @@
 
 ## Overview
 
-Hatch is a minimal Flight SQL server powered by DuckDB. It aims to make
-Arrow-native networking easy to deploy without the overhead of a full
-analytics stack. By speaking the Flight SQL protocol directly, Hatch can
-stream Arrow data to any compatible client with very little overhead.
-
-## Core Components
-
-- **Flight SQL Handler** – Implements the Flight SQL protocol and exposes
-  query, metadata, transaction, and prepared statement operations.
-- **DuckDB Integration** – Repositories that execute SQL against DuckDB
-  using a connection pool.
-- **Schema Manager** – Arrow schema definitions and helper functions used
-  across handlers and services.
-- **Cache** – An in-memory LRU cache for Arrow record batches to avoid
-  recomputing results.
-- **Metrics** – Pluggable metrics collection with a Prometheus backend by
-  default.
-- **Connection and Object Pools** – Efficient resource pools for database
-  connections and Arrow buffers/builders.
+Hatch is a lightweight server that exposes DuckDB over the Arrow Flight SQL protocol. It implements all standard metadata and query RPCs along with prepared statements and JDBC-compatible metadata. Results are streamed as Arrow record batches and can be cached in memory. Optional metrics are exported via Prometheus and both TLS and basic authentication can be enabled through configuration.
 
 ## Architecture
 
-1. **Repositories** interact with DuckDB to run queries and gather
-   metadata.
-2. **Services** wrap repositories with business logic and expose a simple
-   interface to the handlers.
-3. **Handlers** adapt services to the Flight SQL server, translating
-   protocol calls into service operations.
-4. The **Flight SQL server** wires the handlers to gRPC and manages
-   sessions, caching, and middleware.
-5. Optional middleware (authentication, logging, metrics) can be added at
-   the gRPC layer.
+1. **Flight SQL handler** – gRPC implementation of the Flight SQL service. It translates protocol calls into internal service operations.
+2. **Metadata repository** – Collects catalogs, schemas and table information from DuckDB.
+3. **DuckDB backend** – Executes SQL using a connection pool. Query results may be cached for reuse.
+4. **Services and middleware** – Wrap the repository with business logic and add features such as metrics, authentication or logging.
+5. **Server wiring** – `cmd/server/main.go` ties everything together and starts the gRPC server.
 
-This layered approach keeps DuckDB logic isolated while providing clear
-extension points for custom features.
+This layered approach isolates DuckDB while providing clear extension points for additional features or alternative backends.
 
 ## Usage
 
-Build and run the server:
+Build and start the server:
 
 ```bash
 make build
-./hatch serve --database my.db --address 0.0.0.0:32010
+./hatch serve --database example.db --address 0.0.0.0:32010
 ```
 
-Clients can connect using any Flight SQL client (e.g. Python, Java, or Go)
-and issue standard SQL queries. Results are streamed back as Arrow record
-batches. When Prometheus metrics are enabled, a metrics endpoint is
-available on port `9090` by default.
+### Testing RPCs
 
-## Development Notes
+The service speaks pure gRPC. Tools such as `grpcurl` can be used to call metadata endpoints:
 
-- **Dependencies** – Go 1.24 with modules listed in `go.mod`. Key
-  libraries include Apache Arrow, gRPC, Zerolog, Viper, and Cobra.
-- **Building** – Use `make build` for an optimized binary. `make run`
-  will build and run with the default configuration.
-- **Testing** – `make test` runs the Go unit tests under `./pkg`.
-- **Extensibility** – Implement new services or middleware and wire them
-  into `cmd/server/main.go`. The modular design keeps components loosely
-  coupled, making it easy to swap implementations.
+```bash
+# List available services
+grpcurl -plaintext localhost:32010 list
+
+# Fetch catalogs
+grpcurl -plaintext -d '{}' localhost:32010 \
+  arrow.flight.protocol.sql.FlightSqlService/GetCatalogs
+```
+
+### JDBC
+
+Connect using the Flight SQL JDBC driver with a URL similar to:
+
+```
+jdbc:arrow-flight-sql://localhost:32010/?useEncryption=false
+```
+
+Any Flight SQL client (Python, Java or Go) can issue standard SQL queries and receive Arrow data streams.
+
+## Extensibility
+
+* **Add new metadata** – Implement additional repository methods under `pkg/repositories` and expose them via a service in `pkg/services`.
+* **Swap query engines** – Implement the repository interfaces against another engine and register the new implementation in `cmd/server/main.go`.
+* **Middleware** – Custom authentication, logging or metrics interceptors can be added where the gRPC server is configured.
+
+The modular design keeps components loosely coupled, making it straightforward to experiment with new features.
+
