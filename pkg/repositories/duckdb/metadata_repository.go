@@ -257,9 +257,109 @@ func (r *metadataRepository) GetImportedKeys(ctx context.Context, ref models.Tab
 	// TODO: Resolve catalog and constraint names once DuckDB exposes them
 	return fks, nil
 }
-func (*metadataRepository) GetExportedKeys(context.Context, models.TableRef) ([]models.ForeignKey, error) {
-	// TODO: implement foreign key introspection once supported by DuckDB
-	return []models.ForeignKey{}, nil
+func (r *metadataRepository) GetExportedKeys(ctx context.Context, ref models.TableRef) ([]models.ForeignKey, error) {
+	// DuckDB does not expose a direct way to query foreign keys referencing
+	// a table. As a basic implementation, scan all tables in the schema and
+	// inspect their foreign keys. This may be inefficient for large
+	// databases but provides basic functionality until DuckDB adds native
+	// support.
+
+	db, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`
+SELECT table_schema, table_name
+FROM   information_schema.tables
+WHERE  table_type = 'BASE TABLE'`)
+	args := make([]interface{}, 0, 2)
+
+	if s := strPtr(ref.DBSchema); s != "" {
+		sb.WriteString(" AND table_schema = ?")
+		args = append(args, s)
+	}
+	if c := strPtr(ref.Catalog); c != "" {
+		sb.WriteString(" AND table_catalog = ?")
+		args = append(args, c)
+	}
+
+	rows, err := db.QueryContext(ctx, sb.String(), args...)
+	if err != nil {
+		return nil, r.wrapDBErr(err, sb.String())
+	}
+	defer rows.Close()
+
+	pkCatalog := strPtr(ref.Catalog)
+	pkSchema := strPtr(ref.DBSchema)
+
+	var fks []models.ForeignKey
+	for rows.Next() {
+		var schema string
+		var table string
+		if err := rows.Scan(&schema, &table); err != nil {
+			return nil, err
+		}
+
+		tbl := table
+		if schema != "" {
+			tbl = fmt.Sprintf("%s.%s", schema, table)
+		}
+
+		fkRows, err := db.QueryContext(ctx, "PRAGMA foreign_key_list(?)", tbl)
+		if err != nil {
+			return nil, r.wrapDBErr(err, "PRAGMA foreign_key_list")
+		}
+
+		for fkRows.Next() {
+			var (
+				id       int32
+				seq      int32
+				pkTable  string
+				fkColumn string
+				pkColumn string
+				onUpdate string
+				onDelete string
+				match    string
+			)
+			if err := fkRows.Scan(&id, &seq, &pkTable, &fkColumn, &pkColumn, &onUpdate, &onDelete, &match); err != nil {
+				fkRows.Close()
+				return nil, err
+			}
+
+			if pkTable != ref.Table {
+				continue
+			}
+
+			fks = append(fks, models.ForeignKey{
+				PKCatalogName: pkCatalog,
+				PKSchemaName:  pkSchema,
+				PKTableName:   ref.Table,
+				PKColumnName:  pkColumn,
+				FKCatalogName: pkCatalog,
+				FKSchemaName:  schema,
+				FKTableName:   table,
+				FKColumnName:  fkColumn,
+				KeySequence:   seq + 1,
+				PKKeyName:     "",
+				FKKeyName:     "",
+				UpdateRule:    toFKRule(onUpdate),
+				DeleteRule:    toFKRule(onDelete),
+			})
+		}
+		if err := fkRows.Err(); err != nil {
+			fkRows.Close()
+			return nil, err
+		}
+		fkRows.Close()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// TODO: Resolve catalog and constraint names once DuckDB exposes them
+	return fks, nil
 }
 func (*metadataRepository) GetCrossReference(context.Context, models.CrossTableRef) ([]models.ForeignKey, error) {
 	// TODO: implement foreign key introspection once supported by DuckDB
