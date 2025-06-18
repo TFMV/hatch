@@ -67,7 +67,7 @@ func (s *service) HandleDoPut(ctx context.Context, desc *flight.FlightDescriptor
 	// Encode rowsAffected as the PutResult metadata
 	result := make([]byte, 8)
 	binary.LittleEndian.PutUint64(result, uint64(rowsAffected))
-	if err := writer.Write(result); err != nil {
+	if err := writer.WriteMetadata(result); err != nil {
 		s.logger.Error().Err(err).Msg("failed to write PutResult")
 		s.metrics.IncrementCounter("streaming_service_handle_do_put_errors_total", "reason", "write_put_result")
 		return status.Errorf(codes.Internal, "failed to write PutResult: %v", err)
