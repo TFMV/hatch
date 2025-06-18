@@ -361,9 +361,76 @@ WHERE  table_type = 'BASE TABLE'`)
 	// TODO: Resolve catalog and constraint names once DuckDB exposes them
 	return fks, nil
 }
-func (*metadataRepository) GetCrossReference(context.Context, models.CrossTableRef) ([]models.ForeignKey, error) {
-	// TODO: implement foreign key introspection once supported by DuckDB
-	return []models.ForeignKey{}, nil
+func (r *metadataRepository) GetCrossReference(ctx context.Context, ref models.CrossTableRef) ([]models.ForeignKey, error) {
+	// DuckDB does not expose a direct cross-reference query, so inspect the
+	// foreign table's PRAGMA foreign_key_list and filter by the referenced
+	// primary table. This mirrors the behaviour of GetExportedKeys but for a
+	// specific FK table.
+
+	tbl := ref.FKRef.Table
+	if s := strPtr(ref.FKRef.DBSchema); s != "" {
+		tbl = fmt.Sprintf("%s.%s", s, tbl)
+	}
+
+	const q = "PRAGMA foreign_key_list(?)"
+
+	db, err := r.conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, q, tbl)
+	if err != nil {
+		return nil, r.wrapDBErr(err, q)
+	}
+	defer rows.Close()
+
+	pkCatalog := strPtr(ref.PKRef.Catalog)
+	pkSchema := strPtr(ref.PKRef.DBSchema)
+	fkCatalog := strPtr(ref.FKRef.Catalog)
+	fkSchema := strPtr(ref.FKRef.DBSchema)
+
+	var fks []models.ForeignKey
+	for rows.Next() {
+		var (
+			id       int32
+			seq      int32
+			pkTable  string
+			fkColumn string
+			pkColumn string
+			onUpdate string
+			onDelete string
+			match    string
+		)
+		if err := rows.Scan(&id, &seq, &pkTable, &fkColumn, &pkColumn, &onUpdate, &onDelete, &match); err != nil {
+			return nil, err
+		}
+
+		if pkTable != ref.PKRef.Table {
+			continue
+		}
+
+		fks = append(fks, models.ForeignKey{
+			PKCatalogName: pkCatalog,
+			PKSchemaName:  pkSchema,
+			PKTableName:   ref.PKRef.Table,
+			PKColumnName:  pkColumn,
+			FKCatalogName: fkCatalog,
+			FKSchemaName:  fkSchema,
+			FKTableName:   ref.FKRef.Table,
+			FKColumnName:  fkColumn,
+			KeySequence:   seq + 1,
+			PKKeyName:     "",
+			FKKeyName:     "",
+			UpdateRule:    toFKRule(onUpdate),
+			DeleteRule:    toFKRule(onDelete),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// TODO: Resolve catalog and constraint names once DuckDB exposes them
+	return fks, nil
 }
 
 func (r *metadataRepository) GetTypeInfo(ctx context.Context, dataType *int32) ([]models.XdbcTypeInfo, error) {
