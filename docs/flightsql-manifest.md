@@ -3,7 +3,7 @@
 ## Metadata RPCs
 - [x] GetCatalogs
 - [x] GetSchemas
- - [x] GetTables
+- [x] GetTables
 - [x] GetTableTypes
 - [x] GetColumns
 - [x] GetPrimaryKeys
@@ -14,7 +14,7 @@
 ## Execution RPCs
 - [x] DoGet
 - [x] DoPut
- - [~] DoExchange
+- [~] DoExchange
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
 
@@ -38,3 +38,13 @@
 - [x] GetSQLInfo
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
+
+## Known Limitations
+- [ ] DoExchange not supported
+- [ ] No TLS support
+- [ ] Authentication is experimental
+
+## Next Roadmap Items
+- Implement DoExchange
+- Add authentication plugins
+- Expand SQLInfo catalogue
