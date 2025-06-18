@@ -4,8 +4,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
@@ -17,7 +15,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/TFMV/hatch/cmd/server/config"
-	"github.com/TFMV/hatch/cmd/server/middleware"
 	"github.com/TFMV/hatch/pkg/cache"
 	"github.com/TFMV/hatch/pkg/handlers"
 	"github.com/TFMV/hatch/pkg/infrastructure/pool"
@@ -27,14 +24,6 @@ import (
 //───────────────────────────────────
 // Types and Interfaces
 //───────────────────────────────────
-
-// Session represents a client session.
-type Session struct {
-	ID            string
-	User          string
-	TransactionID string
-	Properties    map[string]interface{}
-}
 
 // MetricsCollector defines the metrics interface.
 type MetricsCollector interface {
@@ -68,10 +57,6 @@ type FlightSQLServer struct {
 	memoryCache cache.Cache
 	cacheKeyGen cache.CacheKeyGenerator
 
-	// Object pools
-	byteBufferPool    *pool.ByteBufferPool
-	recordBuilderPool *pool.RecordBuilderPool
-
 	// Handlers
 	queryHandler             handlers.QueryHandler
 	metadataHandler          handlers.MetadataHandler
@@ -81,14 +66,8 @@ type FlightSQLServer struct {
 	// Services
 	transactionService services.TransactionService
 
-	// State
-	mu       sync.RWMutex
-	sessions map[string]*Session
-	closing  bool
-
-	// OAuth2 components
-	authMiddleware *middleware.AuthMiddleware
-	httpServer     *http.Server
+	// State (reserved for future session management)
+	// TODO: add session tracking when authentication is implemented
 }
 
 // New creates a new Flight SQL server (placeholder - use NewFlightSQLServer for now).
@@ -112,18 +91,7 @@ func (s *FlightSQLServer) GetMiddleware() []grpc.ServerOption {
 
 // Close gracefully shuts down the server.
 func (s *FlightSQLServer) Close(ctx context.Context) error {
-	s.mu.Lock()
-	s.closing = true
-	s.mu.Unlock()
-
 	s.logger.Info().Msg("Closing Flight SQL server")
-
-	// Stop OAuth2 HTTP server if running
-	if s.httpServer != nil {
-		if err := s.httpServer.Shutdown(ctx); err != nil {
-			s.logger.Error().Err(err).Msg("Error shutting down OAuth2 HTTP server")
-		}
-	}
 
 	// Stop transaction service if it has a Stop method
 	if stopper, ok := s.transactionService.(interface{ Stop() }); ok {
@@ -142,14 +110,6 @@ func (s *FlightSQLServer) Close(ctx context.Context) error {
 
 	s.logger.Info().Msg("Flight SQL server closed")
 	return nil
-}
-
-// orEmpty returns an empty string if the pointer is nil, otherwise the pointed value
-func orEmpty(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 //───────────────────────────────────
@@ -180,7 +140,6 @@ func NewFlightSQLServer(
 		memoryCache:              c,
 		cacheKeyGen:              kg,
 		logger:                   lg.With().Str("component", "server").Logger(),
-		sessions:                 make(map[string]*Session),
 	}
 }
 
