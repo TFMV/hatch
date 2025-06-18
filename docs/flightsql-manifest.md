@@ -25,5 +25,5 @@
 - [x] Statement Execution Lifecycle
 
 ## SQL Info
-- [~] GetSQLInfo
+- [x] GetSQLInfo
 - [x] GetTypeInfo
