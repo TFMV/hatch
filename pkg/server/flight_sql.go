@@ -404,14 +404,32 @@ func (s *FlightSQLServer) GetFlightInfoCrossReference(
 	cmd flightsql.CrossTableRef,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
-	return nil, status.Error(codes.Unimplemented, "cross reference not supported")
+	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
+		return s.metadataHandler.GetCrossReference(
+			ctx,
+			cmd.PkCatalog,
+			cmd.PkDbSchema,
+			cmd.PkTable,
+			cmd.FkCatalog,
+			cmd.FkDbSchema,
+			cmd.FkTable,
+		)
+	})
 }
 
 func (s *FlightSQLServer) DoGetCrossReference(
 	ctx context.Context,
 	cmd flightsql.CrossTableRef,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return nil, nil, status.Error(codes.Unimplemented, "cross reference not supported")
+	return s.metadataHandler.GetCrossReference(
+		ctx,
+		cmd.PkCatalog,
+		cmd.PkDbSchema,
+		cmd.PkTable,
+		cmd.FkCatalog,
+		cmd.FkDbSchema,
+		cmd.FkTable,
+	)
 }
 
 func (s *FlightSQLServer) GetFlightInfoXdbcTypeInfo(
