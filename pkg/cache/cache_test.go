@@ -163,3 +163,62 @@ func TestCacheEntry(t *testing.T) {
 	assert.Equal(t, now, entry.LastUsed)
 	assert.Equal(t, int64(100), entry.Size)
 }
+
+// recordSize calculates the approximate size of an Arrow record using the same
+// logic as the cache implementation. It is used by tests that need to know the
+// capacity required for storing a single record.
+func recordSize(record arrow.Record) int64 {
+	var size int64
+	for i := 0; i < int(record.NumCols()); i++ {
+		col := record.Column(i)
+		data := col.Data()
+
+		for _, buf := range data.Buffers() {
+			if buf != nil {
+				size += int64(buf.Len())
+			}
+		}
+		for _, child := range data.Children() {
+			for _, buf := range child.Buffers() {
+				if buf != nil {
+					size += int64(buf.Len())
+				}
+			}
+		}
+	}
+	size += int64(record.NumCols() * 32) // Schema overhead estimate
+	return size
+}
+
+// TestMemoryCache_SingleRecordCapacity verifies that when the cache capacity is
+// only large enough for one record, inserting a second record evicts the first
+// and keeps the most recent entry.
+func TestMemoryCache_SingleRecordCapacity(t *testing.T) {
+	ctx := context.Background()
+
+	first := createTestRecord(t, memory.DefaultAllocator)
+	defer first.Release()
+	second := createTestRecord(t, memory.DefaultAllocator)
+	defer second.Release()
+
+	maxSize := recordSize(first)
+	cache := NewMemoryCache(maxSize, memory.DefaultAllocator)
+	defer cache.Close()
+
+	err := cache.Put(ctx, "first", first)
+	require.NoError(t, err)
+
+	err = cache.Put(ctx, "second", second)
+	require.NoError(t, err)
+
+	// The first record should have been evicted
+	res1, err := cache.Get(ctx, "first")
+	require.NoError(t, err)
+	assert.Nil(t, res1)
+
+	res2, err := cache.Get(ctx, "second")
+	require.NoError(t, err)
+	require.NotNil(t, res2)
+	assert.Equal(t, second.NumRows(), res2.NumRows())
+	assert.Equal(t, second.NumCols(), res2.NumCols())
+}
