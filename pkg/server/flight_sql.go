@@ -350,7 +350,7 @@ func (s *FlightSQLServer) DoGetTableTypes(
 
 func (s *FlightSQLServer) GetFlightInfoColumns(
 	ctx context.Context,
-	cmd flightsql.GetColumns,
+	cmd flightsql.CommandGetColumns,
 	desc *flight.FlightDescriptor,
 ) (*flight.FlightInfo, error) {
 	return s.infoFromHandler(ctx, desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
@@ -366,7 +366,7 @@ func (s *FlightSQLServer) GetFlightInfoColumns(
 
 func (s *FlightSQLServer) DoGetColumns(
 	ctx context.Context,
-	cmd flightsql.GetColumns,
+	cmd flightsql.CommandGetColumns,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadataHandler.GetColumns(
 		ctx,
@@ -852,6 +852,12 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 		return 0, status.Errorf(codes.Internal, "execute ps update: %v", err)
 	}
 	return affected, nil
+}
+
+// DoExchange handles bidirectional Flight SQL streams.
+// Currently unsupported, so return Unimplemented until implemented.
+func (s *FlightSQLServer) DoExchange(stream flight.FlightService_DoExchangeServer) error {
+	return status.Error(codes.Unimplemented, "DoExchange not implemented")
 }
 
 // registerSqlInfo registers SQL info with the base server.
