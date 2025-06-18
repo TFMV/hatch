@@ -149,19 +149,4 @@ type XdbcTypeInfo struct {
 	IntervalPrecision sql.NullInt32  `json:"interval_precision"`
 }
 
-// Statistics represents table/column statistics.
-type Statistics struct {
-	CatalogName     string         `json:"catalog_name"`
-	SchemaName      string         `json:"schema_name"`
-	TableName       string         `json:"table_name"`
-	NonUnique       bool           `json:"non_unique"`
-	IndexQualifier  sql.NullString `json:"index_qualifier"`
-	IndexName       sql.NullString `json:"index_name"`
-	Type            int16          `json:"type"`
-	OrdinalPosition int16          `json:"ordinal_position"`
-	ColumnName      sql.NullString `json:"column_name"`
-	AscOrDesc       sql.NullString `json:"asc_or_desc"`
-	Cardinality     sql.NullInt64  `json:"cardinality"`
-	Pages           sql.NullInt64  `json:"pages"`
-	FilterCondition sql.NullString `json:"filter_condition"`
-}
+// TODO: add statistics model when index metadata is supported

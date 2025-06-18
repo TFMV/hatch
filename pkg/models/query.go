@@ -106,37 +106,4 @@ const (
 	TransactionStateRolledBack TransactionState = "ROLLED_BACK"
 )
 
-// QueryMetrics represents metrics for query execution.
-type QueryMetrics struct {
-	QueryID        string        `json:"query_id"`
-	Query          string        `json:"query"`
-	StartTime      time.Time     `json:"start_time"`
-	EndTime        time.Time     `json:"end_time"`
-	ExecutionTime  time.Duration `json:"execution_time"`
-	RowsProcessed  int64         `json:"rows_processed"`
-	BytesProcessed int64         `json:"bytes_processed"`
-	MemoryUsed     int64         `json:"memory_used"`
-	CPUTime        time.Duration `json:"cpu_time"`
-	WaitTime       time.Duration `json:"wait_time"`
-	Success        bool          `json:"success"`
-	ErrorMessage   string        `json:"error_message,omitempty"`
-}
-
-// BatchedQueryResult represents a batched query result for streaming.
-type BatchedQueryResult struct {
-	Schema     *arrow.Schema          `json:"-"`
-	Batches    []arrow.Record         `json:"-"`
-	BatchCount int                    `json:"batch_count"`
-	TotalRows  int64                  `json:"total_rows"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// QueryPlan represents a query execution plan.
-type QueryPlan struct {
-	QueryID       string                 `json:"query_id"`
-	Query         string                 `json:"query"`
-	Plan          string                 `json:"plan"`
-	EstimatedCost float64                `json:"estimated_cost"`
-	EstimatedRows int64                  `json:"estimated_rows"`
-	Properties    map[string]interface{} `json:"properties,omitempty"`
-}
+// TODO: add query metrics and plan models when streaming introspection is implemented
