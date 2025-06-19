@@ -7,14 +7,12 @@
 *.dll
 *.so
 *.dylib
-
+examples/
 test/
 # Test binary, built with `go test -c`
 *.test
-benchmarks.md
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-test/integration/
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
