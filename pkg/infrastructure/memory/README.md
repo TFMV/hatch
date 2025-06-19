@@ -1,4 +1,4 @@
-# Hatch Memory Infrastructure
+# Porter Memory Infrastructure
 
 The memory infrastructure package provides a thread-safe memory allocation tracking system built on top of Apache Arrow's memory allocator. It enables precise monitoring of memory usage across the application while maintaining compatibility with Arrow's memory management system.
 

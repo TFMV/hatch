@@ -1,4 +1,4 @@
-# Hatch Cache Package
+# Porter Cache Package
 
 The cache package provides an in-memory caching system specifically designed for Apache Arrow record batches. It implements a thread-safe, size-bounded cache with LRU (Least Recently Used) eviction policy and comprehensive statistics tracking.
 

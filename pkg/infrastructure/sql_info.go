@@ -1,5 +1,5 @@
-// Package infrastructure provides Flight SQL capability and XDBC metadata
-// services for Hatch.
+// Package infrastructure provides enterprise-grade infrastructure
+// services for Porter.
 package infrastructure
 
 import (
@@ -19,7 +19,7 @@ import (
 // SQL‑INFO PROVIDER
 //───────────────────────────────────
 
-// SQLInfoProvider exposes DuckDB/Hatch SQL capabilities.
+// SQLInfoProvider exposes DuckDB/Porter SQL capabilities.
 type SQLInfoProvider struct {
 	once     sync.Once
 	alloc    memory.Allocator
@@ -40,8 +40,8 @@ func (p *SQLInfoProvider) ensureInit() {
 			p.info[uint32(k)] = v
 		}
 
-		// Flight SQL identification
-		add(flightsql.SqlInfoFlightSqlServerName, "Hatch")
+		// Flight SQL identification
+		add(flightsql.SqlInfoFlightSqlServerName, "Porter")
 		add(flightsql.SqlInfoFlightSqlServerVersion, "2.0.0")
 		add(flightsql.SqlInfoFlightSqlServerArrowVersion, "18.0.0")
 		add(flightsql.SqlInfoFlightSqlServerReadOnly, false)
@@ -80,11 +80,11 @@ func (p *SQLInfoProvider) ensureInit() {
 	})
 }
 
-// GetSQLInfo implements the Flight SQL “GetSqlInfo” RPC semantics.
+// GetSQLInfo implements the Flight SQL "GetSqlInfo" RPC semantics.
 func (p *SQLInfoProvider) GetSQLInfo(ids []uint32) ([]models.SQLInfo, error) {
 	p.ensureInit()
 
-	// “0 ids” means “all”.
+	// "0 ids" means "all".
 	if len(ids) == 0 {
 		return append([]models.SQLInfo(nil), p.infoCopy...), nil // shallow copy
 	}
@@ -98,7 +98,7 @@ func (p *SQLInfoProvider) GetSQLInfo(ids []uint32) ([]models.SQLInfo, error) {
 	return out, nil
 }
 
-// GetSQLInfoResultMap returns the provider’s internal map in Flight format.
+// GetSQLInfoResultMap returns the provider's internal map in Flight format.
 // Map is copied to avoid caller mutation.
 func (p *SQLInfoProvider) GetSQLInfoResultMap() flightsql.SqlInfoResultMap {
 	p.ensureInit()
@@ -128,7 +128,7 @@ type XdbcTypeInfoProvider struct {
 	types []models.XdbcTypeInfo
 }
 
-// NewXdbcTypeInfoProvider constructs with built‑in Hatch/DuckDB types.
+// NewXdbcTypeInfoProvider constructs with built‑in Porter/DuckDB types.
 func NewXdbcTypeInfoProvider() *XdbcTypeInfoProvider {
 	return &XdbcTypeInfoProvider{
 		types: []models.XdbcTypeInfo{

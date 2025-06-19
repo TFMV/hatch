@@ -1,4 +1,4 @@
-// Package infrastructure provides enterprise-grade JDBC compatibility for Hatch.
+// Package infrastructure provides enterprise-grade JDBC compatibility for Porter.
 package infrastructure
 
 import (
@@ -338,7 +338,7 @@ func (p *EnhancedSQLInfoProvider) initializeEnhancedSQLInfo() {
 	defer p.mu.Unlock()
 
 	// Server identification
-	p.sqlInfo[uint32(flightsql.SqlInfoFlightSqlServerName)] = "Hatch Enterprise"
+	p.sqlInfo[uint32(flightsql.SqlInfoFlightSqlServerName)] = "Porter Enterprise"
 	p.sqlInfo[uint32(flightsql.SqlInfoFlightSqlServerVersion)] = "2.0.0"
 	p.sqlInfo[uint32(flightsql.SqlInfoFlightSqlServerArrowVersion)] = "18.0.0"
 	p.sqlInfo[uint32(flightsql.SqlInfoFlightSqlServerReadOnly)] = false

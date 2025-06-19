@@ -1,4 +1,4 @@
-# Hatch Handlers Package
+# Porter Handlers Package
 
 The handlers package implements the Flight SQL protocol handlers, providing a clean interface between the Flight SQL protocol and the underlying database services. It follows a modular design pattern with clear separation of concerns and comprehensive error handling.
 

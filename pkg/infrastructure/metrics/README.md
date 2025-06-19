@@ -1,4 +1,4 @@
-# Hatch Metrics Infrastructure
+# Porter Metrics Infrastructure
 
 The metrics infrastructure package provides a flexible and extensible metrics collection system for the Flight SQL server. It supports multiple metric types, labels, and includes a Prometheus integration for monitoring and alerting.
 
