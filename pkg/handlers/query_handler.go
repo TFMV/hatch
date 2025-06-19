@@ -11,9 +11,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	flightErrors "github.com/TFMV/porter/pkg/errors"
 	"github.com/TFMV/porter/pkg/infrastructure/pool"
@@ -162,9 +162,11 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 	defer timer.Stop()
 
 	h.logger.Debug("Getting flight info", "query", truncateQuery(query))
+	h.logger.Info("GetFlightInfo called with query", "query", query)
 
 	if err := h.queryService.ValidateQuery(ctx, query); err != nil {
 		h.metrics.IncrementCounter("handler_validation_errors")
+		h.logger.Error("Query validation failed", "error", err, "query", query)
 		return nil, h.mapServiceError(err)
 	}
 
@@ -175,7 +177,7 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 	}
 	result, err := h.queryService.ExecuteQuery(ctx, req)
 	if err != nil {
-		h.logger.Error("Failed to get schema", "error", err)
+		h.logger.Error("Failed to get schema", "error", err, "query", query)
 		h.metrics.IncrementCounter("handler_internal_errors")
 		return nil, h.mapServiceError(err)
 	}
@@ -197,15 +199,38 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 	}
 
 	// Build descriptor and ticket following Flight SQL specification
-	cmdBytes, err := proto.Marshal(&flightsql.CommandStatementQuery{Query: query})
+	cmd := &flightpb.CommandStatementQuery{Query: query}
+
+	// Marshal the command into Any protobuf for the descriptor
+	var cmdAny anypb.Any
+	if err := cmdAny.MarshalFrom(cmd); err != nil {
+		return nil, h.mapServiceError(err)
+	}
+
+	// Serialize the Any protobuf as command bytes
+	cmdBytes, err := proto.Marshal(&cmdAny)
 	if err != nil {
 		return nil, h.mapServiceError(err)
 	}
 
-	ticketBytes, err := proto.Marshal(&flightsql.StatementQueryTicket{StatementHandle: cmdBytes})
+	// For the ticket, we need to create a TicketStatementQuery with the query as the statement handle
+	// The statement handle should contain the original query, not the protobuf command
+	ticketStmt := &flightpb.TicketStatementQuery{StatementHandle: []byte(query)}
+
+	// Marshal the ticket statement into Any protobuf
+	var ticketAny anypb.Any
+	if err := ticketAny.MarshalFrom(ticketStmt); err != nil {
+		return nil, h.mapServiceError(err)
+	}
+
+	// Serialize the ticket Any protobuf
+	ticketBytes, err := proto.Marshal(&ticketAny)
 	if err != nil {
 		return nil, h.mapServiceError(err)
 	}
+
+	// Create ticket with the properly formatted ticket bytes
+	ticket := &flightpb.Ticket{Ticket: ticketBytes}
 
 	return &flightpb.FlightInfo{
 		Schema: flight.SerializeSchema(schema, h.allocator),
@@ -214,7 +239,7 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 			Cmd:  cmdBytes,
 		},
 		Endpoint: []*flightpb.FlightEndpoint{{
-			Ticket: &flightpb.Ticket{Ticket: ticketBytes},
+			Ticket: ticket,
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,

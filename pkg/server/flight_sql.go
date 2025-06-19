@@ -1,4 +1,3 @@
-// Package server wires the Flight SQL handlers to gRPC.
 package server
 
 import (
@@ -181,16 +180,28 @@ func (s *FlightSQLServer) infoStatic(desc *flight.FlightDescriptor, schema *arro
 // Query helpers
 //───────────────────────────────────
 
+// GetFlightInfoStatement handles CommandStatementQuery requests from Flight SQL clients
+func (s *FlightSQLServer) GetFlightInfoStatement(
+	ctx context.Context,
+	cmd flightsql.StatementQuery,
+	desc *flight.FlightDescriptor,
+) (*flight.FlightInfo, error) {
+	// Use the query handler to get flight info for the query
+	info, err := s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get flight info: %v", err)
+	}
+	return info, nil
+}
+
 // DoGetStatement streams the query results, with a fast path to the cache.
 func (s *FlightSQLServer) DoGetStatement(
 	ctx context.Context,
 	ticket flightsql.StatementQueryTicket,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	stmt, err := flightsql.ParseStatementQueryTicket(&flight.Ticket{Ticket: ticket.GetStatementHandle()})
-	if err != nil {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "parse ticket: %v", err)
-	}
-	query := string(stmt.GetStatementHandle())
+	// The statement handle contains the original query as bytes
+	query := string(ticket.GetStatementHandle())
+	s.logger.Info().Str("query", query).Msg("DoGetStatement received query")
 	key := s.cacheKeyGen.GenerateKey(query, nil)
 
 	// ── cache hit ───────────────────────────────────────────────
