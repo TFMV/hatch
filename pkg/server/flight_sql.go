@@ -181,27 +181,17 @@ func (s *FlightSQLServer) infoStatic(desc *flight.FlightDescriptor, schema *arro
 // Query helpers
 //───────────────────────────────────
 
-// GetFlightInfoStatement handles "planning" a query.
-func (s *FlightSQLServer) GetFlightInfoStatement(
-	ctx context.Context,
-	cmd flightsql.StatementQuery,
-	desc *flight.FlightDescriptor,
-) (*flight.FlightInfo, error) {
-	key := s.cacheKeyGen.GenerateKey(cmd.GetQuery(), nil)
-
-	if rec, _ := s.memoryCache.Get(ctx, key); rec != nil {
-		return s.infoFromSchema(cmd.GetQuery(), rec.Schema()), nil
-	}
-
-	return s.queryHandler.GetFlightInfo(ctx, cmd.GetQuery())
-}
-
 // DoGetStatement streams the query results, with a fast path to the cache.
 func (s *FlightSQLServer) DoGetStatement(
 	ctx context.Context,
 	ticket flightsql.StatementQueryTicket,
 ) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	key := s.cacheKeyGen.GenerateKey(string(ticket.GetStatementHandle()), nil)
+	stmt, err := flightsql.ParseStatementQueryTicket(&flight.Ticket{Ticket: ticket.GetStatementHandle()})
+	if err != nil {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "parse ticket: %v", err)
+	}
+	query := string(stmt.GetStatementHandle())
+	key := s.cacheKeyGen.GenerateKey(query, nil)
 
 	// ── cache hit ───────────────────────────────────────────────
 	if rec, _ := s.memoryCache.Get(ctx, key); rec != nil {
@@ -212,7 +202,7 @@ func (s *FlightSQLServer) DoGetStatement(
 	}
 
 	// ── cache miss: ask handler ─────────────────────────────────
-	schema, upstream, err := s.queryHandler.ExecuteStatement(ctx, string(ticket.GetStatementHandle()), "")
+	schema, upstream, err := s.queryHandler.ExecuteStatement(ctx, query, "")
 	if err != nil {
 		return nil, nil, err
 	}

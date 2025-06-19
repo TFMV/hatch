@@ -14,9 +14,15 @@
 ## Execution RPCs
 - [x] DoGet
 - [x] DoPut
+- [x] GetFlightInfoStatement
+- [x] DoGetStatement
 - [~] DoExchange
 - [x] CreatePreparedStatement
 - [x] ClosePreparedStatement
+
+## Protocol Compliance
+- [x] Descriptor encoding compliance
+- [x] Ticket round-trip support
 
 ## Prepared Statements
 - [x] DoPutPreparedStatementUpdate
