@@ -14,6 +14,15 @@
 
 ---
 
+> **Seeking Testers & Contributors**  
+> Porter is actively evolving, and I'm looking for developers willing to spend a few hours testing any use cases you might have in mind.  
+> If you hit a bug, open an issue or send a PR. Otherwise, feel free to assign it to me.  
+> Your feedback will shape the future of fast, simple, open SQL over Arrow Flight.
+> 
+> **Ready to contribute?** Check out our [Contributing Guidelines](CONTRIBUTING.md) for community standards, development setup, and technical details.
+
+---
+
 ## What is Porter?
 
 Porter is a **high-performance Flight SQL server** that makes Arrow-native analytics effortless. It provides a flexible abstraction layer for different database backends, currently supporting DuckDB with plans to add more (like ClickHouse). It bridges the gap between analytical databases and modern data infrastructure by speaking the Flight SQL protocol natively.
@@ -40,6 +49,13 @@ Think of it as **analytics with wings** – all the analytical power you love, n
 - **JDBC/ODBC compatibility** through Flight SQL drivers
 - **SQL standard compliance** via database backends
 - **Cross-platform** support (Linux, macOS, Windows)
+
+### Built-in Benchmarking
+- **TPC-H benchmark suite** with DuckDB's native TPC-H module
+- **Multiple output formats** (table, JSON, Arrow)
+- **Configurable scale factors** and iterations
+- **Query plan analysis** and performance metrics
+- **Zero setup** – no external data files required
 
 ## Architecture
 
@@ -192,6 +208,57 @@ while (rs.next()) {
 }
 ```
 
+## Benchmarking
+
+Porter includes a comprehensive TPC-H benchmarking suite that uses DuckDB's built-in TPC-H module for reproducible performance testing.
+
+### Quick Benchmark
+```bash
+# Run a single query with small dataset
+./porter bench --query q1 --scale 0.01
+
+# Run multiple queries with medium dataset  
+./porter bench --query q1,q3,q5 --scale 0.1 --iterations 3
+
+# Run all queries with full dataset
+./porter bench --all --scale 1 --format json --output results.json
+```
+
+### Example Output
+```
+TPC-H Benchmark Results
+=======================
+
+Configuration:
+  Scale Factor: 0.01
+  Iterations: 1
+  Total Time: 120.5ms
+
+Environment:
+  DuckDB Version: v1.3.1
+  Platform: darwin/arm64
+
+Results:
+Query  Iter Time         Rows     Status
+-----  ---- ----         ----     ------
+q1     1    2.952ms      4        OK
+q6     1    0.562ms      1        OK
+q10    1    3.665ms      20       OK
+```
+
+### Benchmark Analysis
+Use the included Python script to analyze results:
+
+```bash
+# Analyze single benchmark
+python3 examples/benchmark_analysis.py results.json
+
+# Compare two benchmark runs
+python3 examples/benchmark_analysis.py --compare baseline.json current.json
+```
+
+For detailed benchmarking documentation, see [docs/benchmarking.md](docs/benchmarking.md).
+
 ## Development
 
 ### Building
@@ -325,22 +392,46 @@ make build
 - **[API Reference](pkg/)** - Go package documentation
 - **[Configuration Reference](config/)** - Complete configuration options
 
-## Roadmap
+## Porter and the Future of Data Migration
 
-### Planned Features
-- [ ] **Multi-database support** (PostgreSQL, ClickHouse adapters)
-- [ ] **Advanced authentication** (JWT, SAML, LDAP)
-- [ ] **Query result caching** with TTL and invalidation
-- [ ] **Horizontal scaling** with query distribution
-- [ ] **WebAssembly UDFs** for custom functions
-- [ ] **Real-time streaming** with Apache Kafka integration
-- [ ] **SQL proxy mode** for existing databases
+As Porter gains:
 
-### Performance Goals
-- [ ] **Sub-millisecond** query planning
-- [ ] **Multi-GB/s** streaming throughput  
-- [ ] **10,000+ concurrent** connections
-- [ ] **Microsecond-level** connection pooling
+- **Multi-backend support** (e.g. ClickHouse, PostgreSQL, etc.)
+- **Distributed query execution** (via DoExchange)
+- **Flight SQL interoperability**
+
+…it becomes not just a query engine, but a conduit — a streamlined pathway for moving structured data between systems without serialization overhead.
+
+### Why This Matters
+
+Most data migration today is:
+
+- **Batch-oriented**
+- **File-based** (CSV, Parquet)
+- **Bloated** with ETL pipelines and format juggling
+
+With Porter, you get:
+
+- **Arrow in, Arrow out**: A columnar memory format travels intact
+- **Query-based filtering**: Only move what matters
+- **Streaming transport**: No intermediate staging or local disk
+- **Backend-agnostic execution**: Read from DuckDB, write to ClickHouse, or vice versa
+
+### Example Use Case
+
+```bash
+# Migrate filtered user data from DuckDB to ClickHouse
+porter --backend duckdb query "SELECT * FROM users WHERE active = true" \
+  | porter --backend clickhouse put --table users_active --stream
+```
+
+With distributed query + DoExchange, this grows into:
+
+- **Live sync jobs** between heterogeneous databases
+- **Selective replication** across cloud and edge
+- **In-flight transformations** using SQL only
+
+---
 
 ## Known Issues & Limitations
 
