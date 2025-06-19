@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/TFMV/porter/cmd/server/config"
+	"github.com/TFMV/porter/pkg/benchmark"
 	"github.com/TFMV/porter/pkg/cache"
 	"github.com/TFMV/porter/pkg/handlers"
 	"github.com/TFMV/porter/pkg/infrastructure"
@@ -67,9 +69,24 @@ Example:
 	RunE: runServer,
 }
 
+var benchCmd = &cobra.Command{
+	Use:   "bench",
+	Short: "Run TPC-H benchmarks against Porter",
+	Long: `Run TPC-H benchmarks using DuckDB's built-in TPC-H module.
+
+Examples:
+  porter bench --query q1 --scale 1 --format json
+  porter bench --all --scale 1 --output results.arrow
+  porter bench --query q1,q5,q22 --scale 0.1 --format table`,
+	RunE: runBenchmark,
+}
+
 func init() {
 	// Add serve command
 	rootCmd.AddCommand(serveCmd)
+
+	// Add bench command
+	rootCmd.AddCommand(benchCmd)
 
 	// Command flags
 	serveCmd.Flags().StringP("config", "c", "", "config file path")
@@ -89,6 +106,18 @@ func init() {
 	serveCmd.Flags().Int64("max-message-size", 16*1024*1024, "maximum message size in bytes")
 	serveCmd.Flags().Bool("reflection", true, "enable gRPC reflection")
 	serveCmd.Flags().Duration("shutdown-timeout", 30*time.Second, "graceful shutdown timeout")
+
+	// Benchmark command flags
+	benchCmd.Flags().StringP("query", "q", "", "TPC-H query to run (e.g., 'q1' or 'q1,q5,q22')")
+	benchCmd.Flags().Bool("all", false, "run all TPC-H queries (q1-q22)")
+	benchCmd.Flags().Float64P("scale", "s", 1.0, "TPC-H scale factor (0.01, 0.1, 1, 10, etc.)")
+	benchCmd.Flags().StringP("format", "f", "table", "output format: table, json, arrow")
+	benchCmd.Flags().StringP("output", "o", "", "output file path (stdout if not specified)")
+	benchCmd.Flags().String("database", ":memory:", "DuckDB database path")
+	benchCmd.Flags().String("log-level", "info", "log level (debug, info, warn, error)")
+	benchCmd.Flags().Int("iterations", 1, "number of iterations per query")
+	benchCmd.Flags().Bool("analyze", false, "include query plan analysis")
+	benchCmd.Flags().Duration("timeout", 10*time.Minute, "query timeout")
 
 	// Bind flags to viper
 	if err := viper.BindPFlags(serveCmd.Flags()); err != nil {
@@ -866,4 +895,83 @@ type middlewareTimerAdapter struct {
 
 func (t *middlewareTimerAdapter) Stop() float64 {
 	return t.timer.Stop()
+}
+
+func runBenchmark(cmd *cobra.Command, args []string) error {
+	// Parse command flags
+	queryFlag, _ := cmd.Flags().GetString("query")
+	allQueries, _ := cmd.Flags().GetBool("all")
+	scaleFactor, _ := cmd.Flags().GetFloat64("scale")
+	format, _ := cmd.Flags().GetString("format")
+	output, _ := cmd.Flags().GetString("output")
+	database, _ := cmd.Flags().GetString("database")
+	logLevel, _ := cmd.Flags().GetString("log-level")
+	iterations, _ := cmd.Flags().GetInt("iterations")
+	analyze, _ := cmd.Flags().GetBool("analyze")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+
+	// Setup logging
+	logger := setupLogging(logLevel)
+
+	// Determine which queries to run
+	var queries []string
+	var err error
+
+	if allQueries {
+		queries = benchmark.GetAllQueries()
+	} else if queryFlag != "" {
+		queries, err = benchmark.ParseQueries(queryFlag)
+		if err != nil {
+			return fmt.Errorf("invalid queries: %w", err)
+		}
+	} else {
+		return fmt.Errorf("must specify either --query or --all")
+	}
+
+	// Create benchmark configuration
+	config := benchmark.BenchmarkConfig{
+		Queries:     queries,
+		ScaleFactor: scaleFactor,
+		Iterations:  iterations,
+		Timeout:     timeout,
+		Analyze:     analyze,
+		Database:    database,
+	}
+
+	// Create benchmark runner
+	runner, err := benchmark.NewRunner(database, logger)
+	if err != nil {
+		return fmt.Errorf("failed to create benchmark runner: %w", err)
+	}
+	defer runner.Close()
+
+	// Run benchmark
+	ctx := context.Background()
+	result, err := runner.Run(ctx, config)
+	if err != nil {
+		return fmt.Errorf("benchmark failed: %w", err)
+	}
+
+	// Determine output destination
+	var writer io.Writer = os.Stdout
+	if output != "" {
+		file, err := os.Create(output)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer file.Close()
+		writer = file
+	}
+
+	// Output results
+	if err := benchmark.OutputResult(result, format, writer); err != nil {
+		return fmt.Errorf("failed to output results: %w", err)
+	}
+
+	logger.Info().
+		Int("queries", len(result.Results)).
+		Dur("total_time", result.TotalTime).
+		Msg("Benchmark completed successfully")
+
+	return nil
 }
