@@ -1,8 +1,8 @@
 .PHONY: build run test clean docker-build docker-run size compress optimize
 
 # Build variables
-BINARY_NAME=hatch
-DOCKER_IMAGE=hatch
+BINARY_NAME=porter
+DOCKER_IMAGE=porter
 DOCKER_TAG=latest
 
 # Detect OS

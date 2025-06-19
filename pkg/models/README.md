@@ -1,4 +1,4 @@
-# Hatch Models Package
+# Porter Models Package
 
 The models package provides core data structures and schemas used throughout the Flight SQL server, including query handling, metadata management, and Arrow schema definitions.
 

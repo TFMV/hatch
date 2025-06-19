@@ -1,6 +1,6 @@
-# Hatch Middleware
+# Porter Middleware
 
-This package provides authentication and authorization middleware for the Hatch server. It supports multiple authentication methods and integrates with gRPC interceptors for both unary and streaming RPCs.
+This package provides authentication and authorization middleware for the Porter server. It supports multiple authentication methods and integrates with gRPC interceptors for both unary and streaming RPCs.
 
 ## Features
 

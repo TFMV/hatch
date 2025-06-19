@@ -1,6 +1,6 @@
 package handlers
 
-import "github.com/TFMV/hatch/pkg/infrastructure/metrics"
+import "github.com/TFMV/porter/pkg/infrastructure/metrics"
 
 // metricsAdapter adapts metrics.Collector to the MetricsCollector interface used in handlers.
 type metricsAdapter struct {

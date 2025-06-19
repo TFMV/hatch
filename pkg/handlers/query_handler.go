@@ -13,10 +13,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	flightErrors "github.com/TFMV/hatch/pkg/errors"
-	"github.com/TFMV/hatch/pkg/infrastructure/pool"
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/services"
+	flightErrors "github.com/TFMV/porter/pkg/errors"
+	"github.com/TFMV/porter/pkg/infrastructure/pool"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/services"
 	flightpb "github.com/apache/arrow-go/v18/arrow/flight/gen/flight"
 )
 

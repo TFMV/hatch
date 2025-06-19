@@ -14,9 +14,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/hatch/pkg/infrastructure/converter"
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/services"
+	"github.com/TFMV/porter/pkg/infrastructure/converter"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/services"
 )
 
 // MetadataHandler handles metadata-related operations.

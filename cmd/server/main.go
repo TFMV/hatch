@@ -26,17 +26,17 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"github.com/TFMV/hatch/cmd/server/config"
-	"github.com/TFMV/hatch/pkg/cache"
-	"github.com/TFMV/hatch/pkg/handlers"
-	"github.com/TFMV/hatch/pkg/infrastructure"
-	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
-	"github.com/TFMV/hatch/pkg/infrastructure/pool"
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/repositories/duckdb"
-	"github.com/TFMV/hatch/pkg/services"
+	"github.com/TFMV/porter/cmd/server/config"
+	"github.com/TFMV/porter/pkg/cache"
+	"github.com/TFMV/porter/pkg/handlers"
+	"github.com/TFMV/porter/pkg/infrastructure"
+	"github.com/TFMV/porter/pkg/infrastructure/metrics"
+	"github.com/TFMV/porter/pkg/infrastructure/pool"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/repositories/duckdb"
+	"github.com/TFMV/porter/pkg/services"
 
-	"github.com/TFMV/hatch/cmd/server/middleware"
+	"github.com/TFMV/porter/cmd/server/middleware"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
@@ -49,21 +49,21 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "hatch",
-	Short: "Hatch Flight SQL Server",
+	Use:   "porter",
+	Short: "Porter Flight SQL Server",
 	Long: `A high-performance Flight SQL server backed by DuckDB.
 
-Hatch implements a Flight SQL Server backed by a DuckDB database.`,
+Porter implements a Flight SQL Server backed by a DuckDB database.`,
 }
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the Hatch Flight SQL Server",
-	Long: `Start the Hatch Flight SQL Server with the specified configuration.
+	Short: "Start the Porter Flight SQL Server",
+	Long: `Start the Porter Flight SQL Server with the specified configuration.
 
 Example:
-  hatch serve --config ./config.yaml
-  hatch serve --address 0.0.0.0:32010 --database :memory:`,
+  porter serve --config ./config.yaml
+  porter serve --address 0.0.0.0:32010 --database :memory:`,
 	RunE: runServer,
 }
 
@@ -94,7 +94,7 @@ func init() {
 	if err := viper.BindPFlags(serveCmd.Flags()); err != nil {
 		panic(fmt.Errorf("failed to bind flags: %w", err))
 	}
-	viper.SetEnvPrefix("HATCH")
+	viper.SetEnvPrefix("PORTER")
 	viper.AutomaticEnv()
 
 	// Add version command
@@ -102,7 +102,7 @@ func init() {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Hatch Flight SQL Server\n")
+			fmt.Printf("Porter Flight SQL Server\n")
 			fmt.Printf("Version:    %s\n", version)
 			fmt.Printf("Commit:     %s\n", commit)
 			fmt.Printf("Build Date: %s\n", buildDate)
@@ -154,7 +154,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		Str("version", version).
 		Str("commit", commit).
 		Str("build_date", buildDate).
-		Msg("Starting Hatch Flight SQL Server")
+		Msg("Starting Porter Flight SQL Server")
 
 	// Create metrics collector
 	var metricsCollector metrics.Collector

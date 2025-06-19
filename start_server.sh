@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Print configuration
-echo "Starting Hatch Flight SQL Server with configuration:"
+echo "Starting Porter Flight SQL Server with configuration:"
 echo "Address: $ADDRESS"
 echo "Database: $DATABASE"
 echo "Log Level: $LOG_LEVEL"
@@ -91,7 +91,7 @@ echo "Reflection Enabled: $REFLECTION_ENABLED"
 echo "Shutdown Timeout: $SHUTDOWN_TIMEOUT"
 
 # Build command with conditional boolean flags
-CMD="hatch serve \
+CMD="porter serve \
   --address \"$ADDRESS\" \
   --database \"$DATABASE\" \
   --log-level \"$LOG_LEVEL\" \

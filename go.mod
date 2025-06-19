@@ -1,4 +1,4 @@
-module github.com/TFMV/hatch
+module github.com/TFMV/porter
 
 go 1.24
 

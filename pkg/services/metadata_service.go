@@ -4,9 +4,9 @@ package services
 import (
 	"context"
 
-	"github.com/TFMV/hatch/pkg/errors"
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/repositories"
+	"github.com/TFMV/porter/pkg/errors"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/repositories"
 	"github.com/apache/arrow-go/v18/arrow"
 )
 

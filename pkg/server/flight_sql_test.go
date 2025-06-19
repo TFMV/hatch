@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/TFMV/hatch/pkg/cache"
-	"github.com/TFMV/hatch/pkg/handlers"
-	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
-	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/porter/pkg/cache"
+	"github.com/TFMV/porter/pkg/handlers"
+	"github.com/TFMV/porter/pkg/infrastructure/metrics"
+	"github.com/TFMV/porter/pkg/models"
 )
 
 // Mock implementations for dependencies
