@@ -11,7 +11,9 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"google.golang.org/protobuf/proto"
 
 	flightErrors "github.com/TFMV/porter/pkg/errors"
 	"github.com/TFMV/porter/pkg/infrastructure/pool"
@@ -194,13 +196,25 @@ func (h *queryHandler) GetFlightInfo(ctx context.Context, query string) (*flight
 		h.schemaCache.Put(schema)
 	}
 
-	// Create a FlightInfo with the schema and encode the query in the ticket
+	// Build descriptor and ticket following Flight SQL specification
+	cmdBytes, err := proto.Marshal(&flightsql.CommandStatementQuery{Query: query})
+	if err != nil {
+		return nil, h.mapServiceError(err)
+	}
+
+	ticketBytes, err := proto.Marshal(&flightsql.StatementQueryTicket{StatementHandle: cmdBytes})
+	if err != nil {
+		return nil, h.mapServiceError(err)
+	}
+
 	return &flightpb.FlightInfo{
 		Schema: flight.SerializeSchema(schema, h.allocator),
+		FlightDescriptor: &flightpb.FlightDescriptor{
+			Type: flightpb.FlightDescriptor_CMD,
+			Cmd:  cmdBytes,
+		},
 		Endpoint: []*flightpb.FlightEndpoint{{
-			Ticket: &flightpb.Ticket{
-				Ticket: []byte(query), // Encode the query in the ticket
-			},
+			Ticket: &flightpb.Ticket{Ticket: ticketBytes},
 		}},
 		TotalRecords: -1,
 		TotalBytes:   -1,
