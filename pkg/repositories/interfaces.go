@@ -7,7 +7,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/porter/pkg/models"
 )
 
 // Transaction represents a database transaction with Flight SQL semantics.

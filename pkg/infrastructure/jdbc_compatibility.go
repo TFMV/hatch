@@ -16,8 +16,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/hatch/pkg/errors"
-	"github.com/TFMV/hatch/pkg/services"
+	"github.com/TFMV/porter/pkg/errors"
+	"github.com/TFMV/porter/pkg/services"
 )
 
 // JDBCCompatibilityLayer provides enterprise-grade JDBC compatibility features.

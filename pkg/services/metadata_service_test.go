@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/porter/pkg/models"
 )
 
 // mockMetadataRepo implements repositories.MetadataRepository

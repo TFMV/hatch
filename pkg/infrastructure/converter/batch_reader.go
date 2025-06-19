@@ -13,7 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 
-	"github.com/TFMV/hatch/pkg/errors"
+	"github.com/TFMV/porter/pkg/errors"
 )
 
 const defaultBatchSize = 1024

@@ -12,7 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql/schema_ref"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
-	"github.com/TFMV/hatch/pkg/models"
+	"github.com/TFMV/porter/pkg/models"
 )
 
 //───────────────────────────────────

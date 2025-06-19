@@ -7,8 +7,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/repositories"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/repositories"
 )
 
 // QueryService defines query operations.

@@ -19,7 +19,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/porter/cmd/server/config"
 )
 
 func setupTestAuthMiddleware(t *testing.T, authType string) (*AuthMiddleware, config.AuthConfig) {

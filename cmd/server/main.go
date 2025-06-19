@@ -26,17 +26,17 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	"github.com/TFMV/hatch/cmd/server/config"
-	"github.com/TFMV/hatch/pkg/cache"
-	"github.com/TFMV/hatch/pkg/handlers"
-	"github.com/TFMV/hatch/pkg/infrastructure"
-	"github.com/TFMV/hatch/pkg/infrastructure/metrics"
-	"github.com/TFMV/hatch/pkg/infrastructure/pool"
-	"github.com/TFMV/hatch/pkg/models"
-	"github.com/TFMV/hatch/pkg/repositories/duckdb"
-	"github.com/TFMV/hatch/pkg/services"
+	"github.com/TFMV/porter/cmd/server/config"
+	"github.com/TFMV/porter/pkg/cache"
+	"github.com/TFMV/porter/pkg/handlers"
+	"github.com/TFMV/porter/pkg/infrastructure"
+	"github.com/TFMV/porter/pkg/infrastructure/metrics"
+	"github.com/TFMV/porter/pkg/infrastructure/pool"
+	"github.com/TFMV/porter/pkg/models"
+	"github.com/TFMV/porter/pkg/repositories/duckdb"
+	"github.com/TFMV/porter/pkg/services"
 
-	"github.com/TFMV/hatch/cmd/server/middleware"
+	"github.com/TFMV/porter/cmd/server/middleware"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
 )

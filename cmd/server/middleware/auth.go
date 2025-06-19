@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/TFMV/hatch/cmd/server/config"
+	"github.com/TFMV/porter/cmd/server/config"
 )
 
 // OAuth2Token represents an OAuth2 token with additional metadata
