@@ -8,7 +8,6 @@
 *.so
 *.dylib
 examples/
-test/
 # Test binary, built with `go test -c`
 *.test
 # Output of the go coverage tool, specifically when used with LiteIDE
@@ -21,7 +20,7 @@ test/
 go.work
 
 .DS_Store
-
+test/integration/target/
 gocheck_artifacts/
 Dockerfile
 .dockerignore
