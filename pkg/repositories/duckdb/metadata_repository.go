@@ -42,7 +42,7 @@ func (r *metadataRepository) GetCatalogs(context.Context) ([]models.Catalog, err
 	// DuckDB has a single in‑memory catalog.
 	return []models.Catalog{{
 		Name:        "memory",
-		Description: "DuckDB in‑memory database",
+		Description: "DuckDB in-memory database",
 	}}, nil
 }
 

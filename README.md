@@ -22,7 +22,7 @@
 
 ## What is Porter?
 
-Porter is a **high-performance Flight SQL server** that makes Arrow-native analytics effortless. It provides a flexible abstraction layer for different database backends, currently supporting DuckDB with plans to add more (like ClickHouse). It bridges the gap between analytical databases and modern data infrastructure by speaking the Flight SQL protocol natively.
+Porter is a **high-performance Flight SQL server** that makes Arrow-native analytics effortless. It provides a flexible abstraction layer for different database backends, supporting both **DuckDB** and **ClickHouse** with a unified Flight SQL interface. It bridges the gap between analytical databases and modern data infrastructure by speaking the Flight SQL protocol natively.
 
 Think of it as **analytics with wings** – all the analytical power you love, now network-accessible with zero-copy Arrow streaming.
 
@@ -72,8 +72,8 @@ Think of it as **analytics with wings** – all the analytical power you love, n
 
 **Core Components:**
 - **Flight SQL Handler** – Protocol implementation and query routing
-- **Database Backends** – Flexible abstraction for different databases (DuckDB, ClickHouse, etc.)
-- **Connection Pool** – Efficient database connection management
+- **Database Backends** – Flexible abstraction supporting DuckDB and ClickHouse
+- **Connection Pool** – Efficient database connection management with backend-specific optimizations
 - **Cache Layer** – Smart caching for schemas and query results
 - **Metrics Collection** – Comprehensive observability and monitoring
 - **Middleware Stack** – Authentication, logging, and custom extensions
@@ -83,6 +83,7 @@ Think of it as **analytics with wings** – all the analytical power you love, n
 ### Prerequisites
 - Go 1.24+ (for building from source)
 - DuckDB (bundled with Go bindings)
+- ClickHouse server (optional, for ClickHouse backend)
 
 ### Installation
 
@@ -102,11 +103,14 @@ go install github.com/TFMV/porter/cmd/server@latest
 
 #### Basic Usage
 ```bash
-# Start with in-memory database
+# Start with in-memory DuckDB database
 ./porter serve
 
-# Start with persistent database
+# Start with persistent DuckDB database
 ./porter serve --database ./my-data.db --address 0.0.0.0:32010
+
+# Start with ClickHouse backend
+./porter serve --database "clickhouse://localhost:9000/default"
 
 # Start with configuration file
 ./porter serve --config ./config.yaml
@@ -137,7 +141,10 @@ server:
   max_message_size: 16777216  # 16MB
 
 database:
+  # DuckDB backend (default)
   dsn: "duckdb://./data.db"
+  # ClickHouse backend
+  # dsn: "clickhouse://localhost:9000/default?username=default&password="
   max_open_conns: 32
   max_idle_conns: 8
   conn_max_lifetime: "1h"
@@ -160,6 +167,41 @@ auth:
   enabled: false
   type: "oauth2"
 ```
+
+## Supported Database Backends
+
+Porter provides a unified Flight SQL interface across multiple database backends:
+
+### DuckDB Backend
+- **Connection String**: `duckdb://path/to/database.db` or `duckdb://:memory:`
+- **Features**: Full analytical SQL, columnar storage, embedded deployment
+- **Use Cases**: Development, analytics workloads, embedded applications
+- **Performance**: Excellent for OLAP queries, TPC-H benchmarks
+
+### ClickHouse Backend  
+- **Connection String**: `clickhouse://host:port/database?username=user&password=pass`
+- **Features**: Distributed analytics, real-time ingestion, horizontal scaling
+- **Use Cases**: Large-scale analytics, time-series data, real-time dashboards
+- **Performance**: Optimized for high-throughput analytical workloads
+
+### Backend Selection
+The backend is automatically detected from the DSN connection string:
+
+```yaml
+database:
+  # DuckDB (embedded)
+  dsn: "duckdb://./analytics.db"
+  
+  # ClickHouse (distributed)  
+  dsn: "clickhouse://localhost:9000/analytics?username=default"
+```
+
+Both backends support:
+- ✅ **Full Flight SQL protocol** compliance
+- ✅ **Arrow-native streaming** for zero-copy data transfer
+- ✅ **Connection pooling** and resource management
+- ✅ **Transaction support** and prepared statements
+- ✅ **Schema discovery** and metadata operations
 
 ## Connecting to Porter
 
@@ -408,11 +450,17 @@ make build
 
 ## Porter and the Future of Data Migration
 
-As Porter gains:
+With Porter's current capabilities:
 
-- **Multi-backend support** (e.g. ClickHouse, PostgreSQL, etc.)
+- **Multi-backend support** (DuckDB and ClickHouse, with more planned)
+- **Unified Flight SQL interface** across all backends
+- **Arrow-native streaming** between different database systems
+
+And as Porter gains:
+
 - **Distributed query execution** (via DoExchange)
-- **Flight SQL interoperability**
+- **Additional backend support** (PostgreSQL, BigQuery, etc.)
+- **Enhanced Flight SQL interoperability**
 
 …it becomes not just a query engine, but a conduit — a streamlined pathway for moving structured data between systems without serialization overhead.
 
@@ -434,9 +482,14 @@ With Porter, you get:
 ### Example Use Case
 
 ```bash
-# Migrate filtered user data from DuckDB to ClickHouse
-porter --backend duckdb query "SELECT * FROM users WHERE active = true" \
-  | porter --backend clickhouse put --table users_active --stream
+# Query DuckDB and stream results to ClickHouse (conceptual example)
+# Currently: Use Porter as a unified Flight SQL gateway
+porter serve --database "duckdb://source.db" &
+porter serve --database "clickhouse://localhost:9000/target" --address :32011 &
+
+# Future: Direct data migration pipeline
+porter migrate --from "duckdb://source.db" --to "clickhouse://localhost:9000/target" \
+  --query "SELECT * FROM users WHERE active = true" --target-table users_active
 ```
 
 With distributed query + DoExchange, this grows into:
