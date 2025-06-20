@@ -7,10 +7,7 @@
 [![Build and Test](https://github.com/TFMV/porter/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/porter/actions/workflows/ci.yml)
 
 > **Status: Experimental**  
-> Porter is under **active development** and is currently **experimental**.  
-> It is **not yet ready for production use**. APIs may change, and features may be incomplete.
-> 
-> For a stable Flight SQL implementation, see [GizmoSQL](https://github.com/gizmodata/gizmosql).
+> Porter is under **active development** and is stable for development and experimental use cases.
 
 ---
 
