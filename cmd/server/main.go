@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -818,36 +819,40 @@ func (s *EnterpriseFlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Con
 	return affected, nil
 }
 
-// Metadata discovery methods
-func (s *EnterpriseFlightSQLServer) GetFlightInfoCatalogs(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	timer := s.metrics.StartTimer("flight_get_info_catalogs")
+// DoGet handles all DoGet requests with proper ticket routing
+func (s *EnterpriseFlightSQLServer) DoGet(ctx context.Context, ticket *flight.Ticket) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get")
 	defer timer.Stop()
 
-	// Get schema from metadata handler to create FlightInfo
-	schema, _, err := s.metadataHandler.GetCatalogs(ctx)
-	if err != nil {
-		s.logger.Error().Err(err).Msg("Failed to get catalogs schema")
-		return nil, err
+	ticketData := string(ticket.Ticket)
+
+	// Handle prepared statement tickets with "PREPARED:" prefix
+	if strings.HasPrefix(ticketData, "PREPARED:") {
+		handle := strings.TrimPrefix(ticketData, "PREPARED:")
+		s.logger.Debug().Str("handle", handle).Msg("Executing prepared statement via DoGet")
+		return s.preparedStatementHandler.ExecuteQuery(ctx, handle, nil)
 	}
 
-	// Create FlightInfo for catalog discovery
-	return &flight.FlightInfo{
-		Schema:           flight.SerializeSchema(schema, s.allocator),
-		FlightDescriptor: desc,
-		Endpoint: []*flight.FlightEndpoint{{
-			Ticket: &flight.Ticket{Ticket: []byte("CATALOGS")},
-		}},
-		TotalRecords: -1,
-		TotalBytes:   -1,
-	}, nil
+	// Handle metadata tickets
+	switch ticketData {
+	case "CATALOGS":
+		s.logger.Debug().Msg("Executing catalog discovery via DoGet")
+		return s.metadataHandler.GetCatalogs(ctx)
+	}
+
+	// For regular query tickets, try to parse as query and execute
+	// This handles standard Flight SQL query tickets
+	if len(ticketData) > 0 {
+		s.logger.Debug().Str("ticket", ticketData).Msg("Executing query from ticket")
+		return s.queryHandler.ExecuteStatement(ctx, ticketData, "")
+	}
+
+	return nil, nil, status.Errorf(codes.InvalidArgument, "invalid ticket format")
 }
 
-func (s *EnterpriseFlightSQLServer) DoGetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	timer := s.metrics.StartTimer("flight_do_get_catalogs")
-	defer timer.Stop()
-
-	return s.metadataHandler.GetCatalogs(ctx)
-}
+// Metadata discovery methods
+// Note: GetFlightInfoCatalogs and DoGetCatalogs are handled by the base server
+// We don't need to override them here as the base server already has proper implementations
 
 // Helper methods
 func (s *EnterpriseFlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *flight.FlightInfo {
