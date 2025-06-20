@@ -1,5 +1,4 @@
 # Porter Makefile - Comprehensive build system for Porter Flight SQL Server
-# Follows modern best practices with advanced options
 
 # =============================================================================
 # Configuration and Variables
@@ -351,6 +350,27 @@ bench-memory: build ## Run memory benchmarks
 	$(call print_info,Running memory benchmarks...)
 	$(GO) test -bench=Benchmark -benchmem -run=^$$ ./bench/...
 	$(call print_success,Memory benchmarks completed)
+
+.PHONY: bench-flight-throughput
+bench-flight-throughput: build ## Run Flight SQL throughput benchmarks
+	$(call print_info,Running Flight SQL throughput benchmarks...)
+	@if [ -z "$(FLIGHT_SERVER_ADDR)" ]; then \
+		echo "Starting Porter server for benchmarking..."; \
+		$(SERVER_BIN) serve --config ./config/config.yaml & \
+		SERVER_PID=$$!; \
+		sleep 5; \
+		export FLIGHT_SERVER_ADDR=localhost:32010; \
+		$(GO) test -v ./bench -run TestFlightThroughputBenchmark; \
+		kill $$SERVER_PID; \
+	else \
+		$(GO) test -v ./bench -run TestFlightThroughputBenchmark; \
+	fi
+	$(call print_success,Flight SQL throughput benchmarks completed)
+
+.PHONY: bench-all
+bench-all: bench bench-memory bench-flight-throughput ## Run all benchmarks
+	$(call print_info,Running all benchmarks...)
+	$(call print_success,All benchmarks completed)
 
 # =============================================================================
 # Development

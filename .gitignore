@@ -18,7 +18,8 @@ examples/
 
 # Go workspace file
 go.work
-
+duckdb/
+arrow-go/
 .DS_Store
 test/integration/target/
 gocheck_artifacts/

@@ -681,6 +681,174 @@ func (s *EnterpriseFlightSQLServer) DoPutCommandStatementUpdate(ctx context.Cont
 	return s.queryHandler.ExecuteUpdate(ctx, cmd.GetQuery(), string(cmd.GetTransactionId()))
 }
 
+// Prepared statement methods
+func (s *EnterpriseFlightSQLServer) CreatePreparedStatement(ctx context.Context, req flightsql.ActionCreatePreparedStatementRequest) (flightsql.ActionCreatePreparedStatementResult, error) {
+	timer := s.metrics.StartTimer("flight_create_prepared_statement")
+	defer timer.Stop()
+
+	handle, schema, err := s.preparedStatementHandler.Create(ctx, req.GetQuery(), string(req.GetTransactionId()))
+	if err != nil {
+		s.logger.Error().Err(err).Str("query", req.GetQuery()).Msg("Failed to create prepared statement")
+		return flightsql.ActionCreatePreparedStatementResult{}, err
+	}
+
+	s.logger.Info().Str("handle", handle).Str("query", req.GetQuery()).Msg("Prepared statement created")
+	return flightsql.ActionCreatePreparedStatementResult{
+		Handle:        []byte(handle),
+		DatasetSchema: schema,
+	}, nil
+}
+
+func (s *EnterpriseFlightSQLServer) ClosePreparedStatement(ctx context.Context, req flightsql.ActionClosePreparedStatementRequest) error {
+	timer := s.metrics.StartTimer("flight_close_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(req.GetPreparedStatementHandle())
+	if err := s.preparedStatementHandler.Close(ctx, handle); err != nil {
+		s.logger.Error().Err(err).Str("handle", handle).Msg("Failed to close prepared statement")
+		return err
+	}
+
+	s.logger.Info().Str("handle", handle).Msg("Prepared statement closed")
+	return nil
+}
+
+func (s *EnterpriseFlightSQLServer) GetFlightInfoPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	schema, err := s.preparedStatementHandler.GetSchema(ctx, handle)
+	if err != nil {
+		s.logger.Error().Err(err).Str("handle", handle).Msg("Failed to get prepared statement schema")
+		return nil, err
+	}
+
+	// Create FlightInfo with a special prepared statement ticket prefix
+	// This allows the DoGet method to distinguish prepared statement tickets
+	ticketData := append([]byte("PREPARED:"), cmd.GetPreparedStatementHandle()...)
+
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: ticketData},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+func (s *EnterpriseFlightSQLServer) DoGetPreparedStatement(ctx context.Context, cmd flightsql.PreparedStatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_prepared_statement")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+	return s.preparedStatementHandler.ExecuteQuery(ctx, handle, nil)
+}
+
+func (s *EnterpriseFlightSQLServer) DoPutPreparedStatementQuery(ctx context.Context, cmd flightsql.PreparedStatementQuery, reader flight.MessageReader, writer flight.MetadataWriter) ([]byte, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_query")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+
+	// Read parameters from the message reader
+	var params arrow.Record
+	for {
+		rec, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		if rec != nil {
+			params = rec
+			break // Use the first record as parameters
+		}
+	}
+
+	// Set parameters if provided
+	if params != nil {
+		if err := s.preparedStatementHandler.SetParameters(ctx, handle, params); err != nil {
+			s.logger.Error().Err(err).Str("handle", handle).Msg("Failed to set prepared statement parameters")
+			params.Release()
+			return nil, err
+		}
+		params.Release()
+	}
+
+	return []byte(handle), nil
+}
+
+func (s *EnterpriseFlightSQLServer) DoPutPreparedStatementUpdate(ctx context.Context, cmd flightsql.PreparedStatementUpdate, reader flight.MessageReader) (int64, error) {
+	timer := s.metrics.StartTimer("flight_do_put_prepared_statement_update")
+	defer timer.Stop()
+
+	handle := string(cmd.GetPreparedStatementHandle())
+
+	// Read parameters from the message reader
+	var params arrow.Record
+	for {
+		rec, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return 0, err
+		}
+		if rec != nil {
+			params = rec
+			break // Use the first record as parameters
+		}
+	}
+
+	// Execute update with parameters
+	affected, err := s.preparedStatementHandler.ExecuteUpdate(ctx, handle, params)
+	if params != nil {
+		params.Release()
+	}
+	if err != nil {
+		s.logger.Error().Err(err).Str("handle", handle).Msg("Failed to execute prepared statement update")
+		return 0, err
+	}
+
+	s.logger.Info().Str("handle", handle).Int64("affected_rows", affected).Msg("Prepared statement update executed")
+	return affected, nil
+}
+
+// Metadata discovery methods
+func (s *EnterpriseFlightSQLServer) GetFlightInfoCatalogs(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	timer := s.metrics.StartTimer("flight_get_info_catalogs")
+	defer timer.Stop()
+
+	// Get schema from metadata handler to create FlightInfo
+	schema, _, err := s.metadataHandler.GetCatalogs(ctx)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to get catalogs schema")
+		return nil, err
+	}
+
+	// Create FlightInfo for catalog discovery
+	return &flight.FlightInfo{
+		Schema:           flight.SerializeSchema(schema, s.allocator),
+		FlightDescriptor: desc,
+		Endpoint: []*flight.FlightEndpoint{{
+			Ticket: &flight.Ticket{Ticket: []byte("CATALOGS")},
+		}},
+		TotalRecords: -1,
+		TotalBytes:   -1,
+	}, nil
+}
+
+func (s *EnterpriseFlightSQLServer) DoGetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	timer := s.metrics.StartTimer("flight_do_get_catalogs")
+	defer timer.Stop()
+
+	return s.metadataHandler.GetCatalogs(ctx)
+}
+
 // Helper methods
 func (s *EnterpriseFlightSQLServer) infoFromSchema(query string, schema *arrow.Schema) *flight.FlightInfo {
 	desc := &flight.FlightDescriptor{
