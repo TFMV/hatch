@@ -259,6 +259,23 @@ python3 examples/benchmark_analysis.py --compare baseline.json current.json
 
 For detailed benchmarking documentation, see [docs/benchmarking.md](docs/benchmarking.md).
 
+### Microbenchmarks
+Porter also ships a small suite of microbenchmarks under `bench/` for
+quick performance checks. First generate a dataset:
+
+```bash
+go run ./bench/gen_data.go --rows=100000 --cols=5 --format=parquet --out=test.parquet
+```
+
+Run the benchmarks with:
+
+```bash
+make bench
+```
+
+Results are printed in standard Go benchmark format and can be formatted as
+CSV or Markdown using the helpers in `bench/report.go`.
+
 ## Development
 
 ### Building
