@@ -65,7 +65,11 @@ run: build
 
 # Run tests
 test:
-	go test -v ./...
+       go test -v ./...
+
+# Run microbenchmarks
+bench:
+       go test -run=^$ -bench=. ./bench -benchmem
 
 # Clean build artifacts
 clean:
