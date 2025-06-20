@@ -299,6 +299,52 @@ func (b *FlightThroughputBenchmark) BenchmarkMetadata() (*BenchmarkResult, error
 	}, nil
 }
 
+// BenchmarkSustainedThroughput measures sustained throughput by loading the largest file multiple times
+func (b *FlightThroughputBenchmark) BenchmarkSustainedThroughput(tableName string, iterations int) (*BenchmarkResult, error) {
+	ctx := context.Background()
+	startTime := time.Now()
+
+	query := fmt.Sprintf("SELECT * FROM %s", tableName)
+	totalRows := int64(0)
+	totalBatches := 0
+
+	for i := 0; i < iterations; i++ {
+		// Execute query
+		info, err := b.client.Execute(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute query (iteration %d): %w", i+1, err)
+		}
+
+		// Read results from all endpoints
+		for _, endpoint := range info.Endpoint {
+			reader, err := b.client.DoGet(ctx, endpoint.Ticket)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get results (iteration %d): %w", i+1, err)
+			}
+
+			for reader.Next() {
+				record := reader.Record()
+				totalRows += record.NumRows()
+				totalBatches++
+				record.Release()
+			}
+			reader.Release()
+		}
+	}
+
+	duration := time.Since(startTime)
+	throughput := float64(totalRows) / duration.Seconds()
+
+	return &BenchmarkResult{
+		Name:         fmt.Sprintf("SustainedThroughput_%dx", iterations),
+		Duration:     duration,
+		RowsReturned: totalRows,
+		BatchCount:   totalBatches,
+		Throughput:   throughput,
+		DataSize:     0, // Will be set by caller
+	}, nil
+}
+
 // BenchmarkResult represents the result of a benchmark run
 type BenchmarkResult struct {
 	Name         string
@@ -430,6 +476,30 @@ func RunFlightThroughputBenchmarks(serverAddr, parquetDir string) error {
 	}
 	fmt.Println()
 
+	// First run sustained throughput test with the largest file
+	if len(availableTables) > 0 {
+		largestTable := availableTables[0] // leftdate3_192_loop_1 should be first
+		fmt.Printf("🔥 Sustained Throughput Test: %s (20x iterations)\n", largestTable)
+		fmt.Println("─────────────────────────────────────────────────────────")
+
+		tableSize := getFileSize(largestTable)
+		if result, err := benchmark.BenchmarkSustainedThroughput(largestTable, 20); err != nil {
+			fmt.Printf("❌ Sustained Throughput: FAILED - %v\n", err)
+		} else {
+			result.DataSize = tableSize * 20 // Total data processed across all iterations
+			fmt.Printf("   %s\n", result)
+
+			// Calculate average per-iteration metrics
+			avgDuration := result.Duration / 20
+			avgThroughputMBs := float64(tableSize) / (1024 * 1024) / avgDuration.Seconds()
+			avgRowsPerSec := float64(result.RowsReturned) / 20 / result.Duration.Seconds() * 20
+
+			fmt.Printf("   📈 Average per iteration: %.1f MB/s, %.0f rows/sec, %v duration\n",
+				avgThroughputMBs, avgRowsPerSec, avgDuration)
+		}
+		fmt.Println()
+	}
+
 	// Run benchmarks for each available table
 	for i, table := range availableTables {
 		fmt.Printf("🔄 Benchmarking Dataset %d/%d: %s\n", i+1, len(availableTables), table)
@@ -439,7 +509,11 @@ func RunFlightThroughputBenchmarks(serverAddr, parquetDir string) error {
 
 		// Full table scan
 		if result, err := benchmark.BenchmarkFullTableScan(table); err != nil {
-			fmt.Printf("❌ Full Table Scan: FAILED - %v\n", err)
+			if strings.Contains(err.Error(), "unsupported DuckDB type") {
+				fmt.Printf("⚠️  Full Table Scan: SKIPPED - unsupported data types (integer arrays)\n")
+			} else {
+				fmt.Printf("❌ Full Table Scan: FAILED - %v\n", err)
+			}
 		} else {
 			result.DataSize = tableSize
 			fmt.Printf("   %s\n", result)
@@ -471,7 +545,11 @@ func RunFlightThroughputBenchmarks(serverAddr, parquetDir string) error {
 
 		// Streaming
 		if result, err := benchmark.BenchmarkStreaming(table); err != nil {
-			fmt.Printf("❌ Streaming Query: FAILED - %v\n", err)
+			if strings.Contains(err.Error(), "unsupported DuckDB type") {
+				fmt.Printf("⚠️  Streaming Query: SKIPPED - unsupported data types (integer arrays)\n")
+			} else {
+				fmt.Printf("❌ Streaming Query: FAILED - %v\n", err)
+			}
 		} else {
 			result.DataSize = tableSize
 			fmt.Printf("   %s\n", result)

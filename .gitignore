@@ -15,7 +15,7 @@ examples/
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
-
+bench/bench.parquet
 # Go workspace file
 go.work
 duckdb/
