@@ -67,3 +67,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// Use local ClickHouse client
+replace github.com/ClickHouse/clickhouse-go/v2 => ./clickhouse-go

@@ -19,6 +19,7 @@ bench/bench.parquet
 # Go workspace file
 go.work
 duckdb/
+clickhouse-go/
 arrow-go/
 .DS_Store
 test/integration/target/
