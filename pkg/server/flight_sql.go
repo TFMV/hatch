@@ -49,14 +49,10 @@ type Timer interface {
 type FlightSQLServer struct {
 	flightsql.BaseServer
 
-	// Configuration
-	config *config.Config
-
 	// Core components
 	pool        pool.ConnectionPool
 	allocator   arrowmemory.Allocator
 	logger      zerolog.Logger
-	metrics     MetricsCollector
 	memoryCache cache.Cache
 	cacheKeyGen cache.CacheKeyGenerator
 
@@ -844,51 +840,4 @@ func (s *FlightSQLServer) DoPutPreparedStatementUpdate(
 // Currently unsupported, so return Unimplemented until implemented.
 func (s *FlightSQLServer) DoExchange(stream flight.FlightService_DoExchangeServer) error {
 	return status.Error(codes.Unimplemented, "DoExchange not implemented")
-}
-
-// registerSqlInfo registers SQL info with the base server.
-func (s *FlightSQLServer) registerSqlInfo() error {
-	// Server info
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerName, "DuckDB Flight SQL Server"); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerVersion, "1.0.0"); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerArrowVersion, "18.0.0"); err != nil {
-		return err
-	}
-
-	// SQL language support
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLCatalog, true); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLSchema, true); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoDDLTable, true); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoIdentifierCase, int32(1)); err != nil { // Case sensitive
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoQuotedIdentifierCase, int32(1)); err != nil { // Case sensitive
-		return err
-	}
-
-	// Transaction support
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransaction, int32(0)); err != nil { // Transactions supported
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerCancel, false); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerStatementTimeout, int32(0)); err != nil {
-		return err
-	}
-	if err := s.BaseServer.RegisterSqlInfo(flightsql.SqlInfoFlightSqlServerTransactionTimeout, int32(0)); err != nil {
-		return err
-	}
-
-	return nil
 }
