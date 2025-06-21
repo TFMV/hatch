@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Cat Head -->
+  <ellipse cx="100" cy="110" rx="45" ry="40" fill="#1a1a1a"/>
+  
+  <!-- Cat Ears -->
+  <polygon points="70,85 85,65 90,90" fill="#1a1a1a"/>
+  <polygon points="110,90 115,65 130,85" fill="#1a1a1a"/>
+  
+  <!-- Inner Ears -->
+  <polygon points="74,82 82,70 86,85" fill="#ff69b4"/>
+  <polygon points="114,85 118,70 126,82" fill="#ff69b4"/>
+  
+  <!-- Glasses Frame -->
+  <g stroke="#333" stroke-width="3" fill="none">
+    <!-- Left lens -->
+    <circle cx="85" cy="100" r="18"/>
+    <!-- Right lens -->
+    <circle cx="115" cy="100" r="18"/>
+    <!-- Bridge -->
+    <line x1="103" y1="100" x2="97" y2="100"/>
+    <!-- Left temple -->
+    <path d="M 67 100 Q 60 95 55 90"/>
+    <!-- Right temple -->
+    <path d="M 133 100 Q 140 95 145 90"/>
+  </g>
+  
+  <!-- Glasses Lenses (slightly tinted) -->
+  <circle cx="85" cy="100" r="16" fill="#f0f8ff" opacity="0.3"/>
+  <circle cx="115" cy="100" r="16" fill="#f0f8ff" opacity="0.3"/>
+  
+  <!-- Eyes behind glasses -->
+  <ellipse cx="85" cy="98" rx="8" ry="12" fill="#00ff41"/>
+  <ellipse cx="115" cy="98" rx="8" ry="12" fill="#00ff41"/>
+  
+  <!-- Eye pupils -->
+  <ellipse cx="85" cy="100" rx="3" ry="8" fill="#000"/>
+  <ellipse cx="115" cy="100" rx="3" ry="8" fill="#000"/>
+  
+  <!-- Eye shine -->
+  <ellipse cx="87" cy="96" rx="1.5" ry="3" fill="#fff"/>
+  <ellipse cx="117" cy="96" rx="1.5" ry="3" fill="#fff"/>
+  
+  <!-- Nose -->
+  <polygon points="100,115 95,120 105,120" fill="#ff69b4"/>
+  
+  <!-- Mouth -->
+  <path d="M 100 122 Q 95 125 90 122" stroke="#333" stroke-width="2" fill="none"/>
+  <path d="M 100 122 Q 105 125 110 122" stroke="#333" stroke-width="2" fill="none"/>
+  
+  <!-- Whiskers -->
+  <g stroke="#333" stroke-width="2">
+    <line x1="60" y1="110" x2="75" y2="108"/>
+    <line x1="60" y1="118" x2="75" y2="118"/>
+    <line x1="60" y1="126" x2="75" y2="128"/>
+    
+    <line x1="125" y1="108" x2="140" y2="110"/>
+    <line x1="125" y1="118" x2="140" y2="118"/>
+    <line x1="125" y1="128" x2="140" y2="126"/>
+  </g>
+  
+  <!-- Cat Body (simplified) -->
+  <ellipse cx="100" cy="160" rx="30" ry="25" fill="#1a1a1a"/>
+  
+  <!-- Small data/tech elements around the cat -->
+  <g fill="#00ff41" opacity="0.6" font-family="monospace" font-size="8">
+    <text x="20" y="30">SELECT *</text>
+    <text x="150" y="40">FROM data</text>
+    <text x="30" y="180">Arrow↗</text>
+    <text x="140" y="190">gRPC</text>
+  </g>
+  
+  <!-- Small binary code pattern -->
+  <g fill="#333" opacity="0.3" font-family="monospace" font-size="6">
+    <text x="10" y="50">101010</text>
+    <text x="160" y="60">110011</text>
+    <text x="15" y="160">001101</text>
+    <text x="155" y="170">111000</text>
+  </g>
+</svg> 
