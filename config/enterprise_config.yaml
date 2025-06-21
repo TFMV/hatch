@@ -41,4 +41,20 @@ enterprise:
   
 # Authentication disabled for benchmarking
 auth:
-  enabled: false 
+  enabled: false
+  type: "oauth2"
+  oauth2_auth:
+    client_id: "enterprise-client"
+    client_secret: "enterprise-secret"
+    allowed_redirect_uris:
+      - "https://enterprise.example.com/oauth/callback"
+      - "https://admin.example.com/auth/callback"
+    authorize_endpoint: "/oauth2/authorize"
+    token_endpoint: "/oauth2/token"
+    scopes: ["read", "write", "admin"]
+    access_token_ttl: 1h
+    refresh_token_ttl: 24h
+    allowed_grant_types:
+      - "authorization_code"
+      - "refresh_token"
+      - "client_credentials" 

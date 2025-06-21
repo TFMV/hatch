@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -397,6 +398,13 @@ func (m *AuthMiddleware) HandleOAuth2Authorize(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Validate redirect URI against allowed list
+	if err := m.validateRedirectURI(redirectURI); err != nil {
+		m.logger.Warn().Err(err).Str("redirect_uri", redirectURI).Msg("Invalid redirect URI")
+		http.Error(w, "Invalid redirect URI", http.StatusBadRequest)
+		return
+	}
+
 	// Generate authorization code
 	code := generateRandomString(32)
 	expiresAt := time.Now().Add(10 * time.Minute)
@@ -568,6 +576,38 @@ func generateRandomString(length int) string {
 		return ""
 	}
 	return hex.EncodeToString(b)
+}
+
+// validateRedirectURI validates that the provided redirect URI is in the allowed list
+func (m *AuthMiddleware) validateRedirectURI(redirectURI string) error {
+	if redirectURI == "" {
+		return fmt.Errorf("redirect URI is required")
+	}
+
+	// Parse the redirect URI to validate it's a proper URL
+	parsedURI, err := url.ParseRequestURI(redirectURI)
+	if err != nil {
+		return fmt.Errorf("invalid redirect URI format: %w", err)
+	}
+
+	// Check if the scheme is http or https
+	if parsedURI.Scheme != "http" && parsedURI.Scheme != "https" {
+		return fmt.Errorf("redirect URI must use http or https scheme")
+	}
+
+	// Check for a non-empty host
+	if parsedURI.Host == "" {
+		return fmt.Errorf("redirect URI must have a valid host")
+	}
+
+	// Check if the redirect URI is in the allowed list
+	for _, allowedURI := range m.config.OAuth2Auth.AllowedRedirectURIs {
+		if redirectURI == allowedURI {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("redirect URI not in allowed list")
 }
 
 // ----- Handshake helpers ----------------------------------------------------
