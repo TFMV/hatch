@@ -4,12 +4,12 @@
 # Porter
   
 *Zero‑copy analytics, delivered at Mach Arrow.*
-  
-</div>
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/porter)](https://goreportcard.com/report/github.com/TFMV/porter)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Build and Test](https://github.com/TFMV/porter/actions/workflows/ci.yml/badge.svg)](https://github.com/TFMV/porter/actions/workflows/ci.yml)
+
+</div>
 
 > **Status: Experimental**  
 > Porter is under **active development** and is stable for development and experimental use cases.
