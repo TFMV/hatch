@@ -64,8 +64,12 @@ func FuzzFlightSQLServer(f *testing.F) {
 		ctx := context.Background()
 		query := string(data)
 
-		server.GetFlightInfoStatement(ctx, &statementQuery{query: query}, &flight.FlightDescriptor{Type: flight.DescriptorCMD, Cmd: data})
-		server.DoGetStatement(ctx, &statementQueryTicket{handle: data})
+		if _, err := server.GetFlightInfoStatement(ctx, &statementQuery{query: query}, &flight.FlightDescriptor{Type: flight.DescriptorCMD, Cmd: data}); err != nil {
+			t.Errorf("GetFlightInfoStatement error: %v", err)
+		}
+		if _, _, err := server.DoGetStatement(ctx, &statementQueryTicket{handle: data}); err != nil {
+			t.Errorf("DoGetStatement error: %v", err)
+		}
 
 		schema1 := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 		b1 := array.NewRecordBuilder(allocator, schema1)
@@ -73,18 +77,22 @@ func FuzzFlightSQLServer(f *testing.F) {
 		rec1 := b1.NewRecord()
 		b1.Release()
 
-		schema2 := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
-		b2 := array.NewRecordBuilder(allocator, schema2)
-		b2.Field(0).(*array.Float64Builder).Append(1.0)
+		// Use the same schema as rec1 to avoid schema mismatch
+		b2 := array.NewRecordBuilder(allocator, schema1)
+		b2.Field(0).(*array.Int64Builder).Append(2)
 		rec2 := b2.NewRecord()
 		b2.Release()
 
 		reader := &sliceMessageReader{records: []arrow.Record{rec1, rec2}}
 		writer := nopMetadataWriter{}
-		server.DoPutPreparedStatementQuery(ctx, &preparedStatementQueryCmd{handle: data}, reader, writer)
+		if _, err := server.DoPutPreparedStatementQuery(ctx, &preparedStatementQueryCmd{handle: data}, reader, writer); err != nil {
+			t.Errorf("DoPutPreparedStatementQuery error: %v", err)
+		}
 
 		reader = &sliceMessageReader{records: []arrow.Record{rec1}}
-		server.DoPutPreparedStatementUpdate(ctx, &preparedStatementUpdateCmd{handle: data}, reader)
+		if _, err := server.DoPutPreparedStatementUpdate(ctx, &preparedStatementUpdateCmd{handle: data}, reader); err != nil {
+			t.Errorf("DoPutPreparedStatementUpdate error: %v", err)
+		}
 
 		rec1.Release()
 		rec2.Release()

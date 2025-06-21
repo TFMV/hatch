@@ -37,10 +37,10 @@ func TestInfoFromHandlerErrors(t *testing.T) {
 	desc := &flight.FlightDescriptor{Type: flight.DescriptorCMD}
 	_, err = srv.infoFromHandler(context.Background(), desc, func() (*arrow.Schema, <-chan flight.StreamChunk, error) {
 		called = true
-		return nil, nil, assertAnError
+		return nil, nil, errAssertAnError
 	})
 	require.True(t, called)
 	require.Error(t, err)
 }
 
-var assertAnError = fmt.Errorf("upstream error")
+var errAssertAnError = fmt.Errorf("upstream error")

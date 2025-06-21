@@ -8,7 +8,6 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -76,7 +75,7 @@ func TestGenerateCreateTableStmt(t *testing.T) {
 	repo := &duckDBStreamingRepository{logger: zerolog.Nop()}
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "id", Type: arrow.PrimitiveTypes.Int64, Nullable: false},
-		{Name: "name", Type: arrow.BinaryTypes.String},
+		{Name: "name", Type: arrow.BinaryTypes.String, Nullable: true},
 	}, nil)
 	stmt := repo.generateCreateTableStmt(repo.quoteIdentifier("t"), schema)
 	require.Equal(t, "CREATE TABLE IF NOT EXISTS \"t\" (\"id\" BIGINT NOT NULL, \"name\" VARCHAR)", stmt)

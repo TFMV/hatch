@@ -433,7 +433,12 @@ func RunFlightThroughputBenchmarks(serverAddr, parquetDir string) error {
 	if err := benchmark.Setup(); err != nil {
 		return fmt.Errorf("failed to setup benchmark: %w", err)
 	}
-	defer benchmark.Cleanup()
+	defer func() {
+		err := benchmark.Cleanup()
+		if err != nil {
+			fmt.Printf("cleanup error: %v\n", err)
+		}
+	}()
 
 	// Print professional header
 	fmt.Println("🚀 Porter Flight SQL Performance Benchmark")
@@ -614,7 +619,12 @@ func BenchmarkFlightThroughput(b *testing.B) {
 	benchmark := NewFlightThroughputBenchmark(serverAddr, parquetDir)
 
 	require.NoError(b, benchmark.Setup())
-	defer benchmark.Cleanup()
+	defer func() {
+		err := benchmark.Cleanup()
+		if err != nil {
+			fmt.Printf("cleanup error: %v\n", err)
+		}
+	}()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

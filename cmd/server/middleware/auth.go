@@ -636,8 +636,7 @@ func (m *AuthMiddleware) ValidateHandshakePayload(payload []byte) (string, error
 		}
 		return user, nil
 	case "bearer":
-		token := string(payload)
-		user, ok := m.config.BearerAuth.Tokens[token]
+		user, ok := m.config.BearerAuth.Tokens[string(payload)]
 		if !ok {
 			return "", fmt.Errorf("invalid token")
 		}

@@ -302,7 +302,12 @@ func (cv *ConnectionValidator) ValidateConnection(ctx context.Context, db *sql.D
 	if err != nil {
 		return fmt.Errorf("transaction begin failed: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			cv.logger.Error().Err(err).Msg("failed to rollback transaction")
+		}
+	}()
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("transaction commit failed: %w", err)

@@ -136,10 +136,6 @@ FROM   system.columns
 WHERE  table = ?`)
 	args := []interface{}{ref.Table}
 
-	if s := strPtr(ref.DBSchema); s != "" {
-		sb.WriteString(" AND database = ?")
-		args = append(args, s)
-	}
 	sb.WriteString(" ORDER BY position")
 
 	db, err := r.conn(ctx)
@@ -195,9 +191,6 @@ WHERE  table = ? AND is_in_primary_key = 1
 ORDER  BY position`
 
 	args := []interface{}{ref.Table}
-	if s := strPtr(ref.DBSchema); s != "" {
-		// ClickHouse doesn't have a separate schema concept, database is the schema
-	}
 
 	db, err := r.conn(ctx)
 	if err != nil {
