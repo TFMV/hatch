@@ -4,6 +4,9 @@ package duckdb
 import (
 	"context"
 	"database/sql"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -111,6 +114,39 @@ func (r *queryRepository) ExecuteUpdate(
 	return ur, err
 }
 
+// Explain returns an execution plan for the given query.
+func (r *queryRepository) Explain(
+	ctx context.Context,
+	query string,
+	txn repositories.Transaction,
+) (*models.ExplainResult, error) {
+	r.log.Debug().
+		Str("sql", truncate(query, 120)).
+		Bool("in_tx", txn != nil).
+		Msg("explain")
+
+	er, err := withQuerier(r, ctx, txn, func(q querier) (*models.ExplainResult, error) {
+		rows, err := q.QueryContext(ctx, "EXPLAIN "+query)
+		if err != nil {
+			return nil, errors.Wrap(err, errors.CodeQueryFailed, "explain")
+		}
+		defer rows.Close()
+
+		var lines []string
+		for rows.Next() {
+			var line string
+			if scanErr := rows.Scan(&line); scanErr != nil {
+				return nil, errors.Wrap(scanErr, errors.CodeInternal, "scan explain")
+			}
+			lines = append(lines, line)
+		}
+
+		res := parseDuckDBExplain(lines)
+		return res, nil
+	})
+	return er, err
+}
+
 func (r *queryRepository) Prepare(
 	ctx context.Context,
 	query string,
@@ -202,3 +238,29 @@ func truncate(s string, max int) string {
 	}
 	return s[:max] + "…"
 }
+
+// parseDuckDBExplain converts raw EXPLAIN output lines into an ExplainResult.
+func parseDuckDBExplain(lines []string) *models.ExplainResult {
+	res := &models.ExplainResult{
+		Backend:     "duckdb",
+		CacheStatus: "cold",
+	}
+	if len(lines) == 0 {
+		return res
+	}
+	res.PlanSummary = strings.Join(lines, "\n")
+	for _, l := range lines {
+		if m := rowsRegexp.FindStringSubmatch(l); len(m) == 2 {
+			if v, err := strconv.Atoi(m[1]); err == nil {
+				res.EstimatedRows = v
+				break
+			}
+		}
+	}
+	if res.ExecutionMode == "" {
+		res.ExecutionMode = "streamed"
+	}
+	return res
+}
+
+var rowsRegexp = regexp.MustCompile(`rows=([0-9]+)`) // best effort

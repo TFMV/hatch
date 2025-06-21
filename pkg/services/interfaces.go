@@ -15,6 +15,7 @@ import (
 type QueryService interface {
 	ExecuteQuery(ctx context.Context, req *models.QueryRequest) (*models.QueryResult, error)
 	ExecuteUpdate(ctx context.Context, req *models.UpdateRequest) (*models.UpdateResult, error)
+	ExplainQuery(ctx context.Context, query string) (*models.ExplainResult, error)
 	ValidateQuery(ctx context.Context, query string) error
 	GetStatementType(query string) StatementType
 	IsUpdateStatement(query string) bool
