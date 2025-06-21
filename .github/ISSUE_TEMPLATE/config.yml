@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Porter Community
+    url: https://github.com/TFMV/porter
+    about: Join the Porter community and contribute to fast, secure SQL serving. 
