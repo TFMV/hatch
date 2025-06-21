@@ -26,10 +26,12 @@ func NormalizeMotherDuckDSN(dsn string) string {
 	}
 	if u.Scheme == "motherduck" {
 		u.Scheme = "duckdb"
-		if u.Host == "" {
+		// For motherduck://dbname, convert to duckdb://motherduck/dbname
+		if u.Host != "" && !strings.HasPrefix(u.Host, "motherduck") {
+			u.Path = "/" + u.Host + u.Path
 			u.Host = "motherduck"
-		} else if !strings.HasPrefix(u.Host, "motherduck") {
-			u.Host = "motherduck" + u.Host
+		} else if u.Host == "" {
+			u.Host = "motherduck"
 		}
 		return u.String()
 	}
