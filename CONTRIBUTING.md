@@ -1,382 +1,142 @@
 # Contributing to Porter
 
-Thank you for your interest in contributing to Porter! This document provides guidelines for contributing to the project, from community standards to technical development.
+> Have some fun. Don’t be afraid of making a mistake.
+> I do it all the time. Just look at my PRs.
 
-## Community Guidelines
+---
 
-### Code of Conduct
+Porter is a project built on restraint, clarity, and speed—but that doesn’t mean the process has to be uptight. Whether you’re fixing a typo, adding a backend, or building something weird and beautiful on top of Flight SQL, you’re welcome here.
 
-Porter is committed to providing a welcoming and inclusive environment for all contributors. We follow these principles:
+You don’t need to be an expert. You just need to care.
 
-- **Be Respectful**: Treat all contributors with respect and kindness
-- **Be Inclusive**: Welcome contributors from all backgrounds and experience levels
-- **Be Constructive**: Provide helpful, constructive feedback
-- **Be Patient**: Remember that everyone is learning and growing
-- **Be Collaborative**: Work together to improve the project
+---
 
-### Communication Standards
+## Community Principles
 
-#### In Issues and Discussions
-- Use clear, descriptive titles and descriptions
-- Be specific about problems, solutions, and expected outcomes
-- Reference related issues or pull requests when applicable
-- Use appropriate labels and milestones
-- Respond to feedback and questions promptly
+Porter is small, focused software. The community around it should feel the same way: calm, curious, and collaborative.
 
-#### In Code Reviews
-- Be constructive and specific in feedback
-- Focus on the code, not the person
-- Explain the reasoning behind suggestions
-- Acknowledge good work and improvements
-- Use a respectful tone even when pointing out issues
+* **Be kind.** Especially when reviewing, explaining, or disagreeing.
+* **Be concise.** We value clarity over volume.
+* **Be honest.** Don’t fake confidence. Nobody here expects you to know everything.
+* **Be generous.** Share what you learn. Credit others. Ask good questions.
 
-#### In Pull Requests
-- Provide clear descriptions of changes
-- Include tests for new functionality
-- Update documentation as needed
-- Respond to review comments promptly
-- Keep commits focused and well-described
+This isn’t corporate open source. It’s a shared effort by people who want fast, secure systems that don’t make your brain hurt.
 
-### Reporting Issues
+---
 
-When reporting issues:
+## Getting Started
 
-1. **Search first**: Check if the issue has already been reported
-2. **Be specific**: Include steps to reproduce, expected vs actual behavior
-3. **Include context**: OS, Go version, Porter version, relevant logs
-4. **Use templates**: Follow the provided issue templates
-5. **Be patient**: Maintainers are volunteers with limited time
+1. **Fork the repo**
 
-### Getting Help
+2. **Clone and set up**:
 
-- **Documentation**: Check the README and docs/ directory first
-- **Issues**: Search existing issues for similar problems
-- **Discussions**: Use GitHub Discussions for questions and ideas
-- **Community**: Be respectful when asking for help
-
-## Development Setup
-
-### Prerequisites
-
-- **Go 1.24+**: Required for building and testing
-- **Git**: For version control
-- **DuckDB**: Automatically handled via Go bindings
-- **Make**: For build automation (optional but recommended)
-
-### Local Development Environment
-
-1. **Clone the repository**:
    ```bash
    git clone https://github.com/TFMV/porter.git
    cd porter
-   ```
-
-2. **Install dependencies**:
-   ```bash
    go mod download
+   make build  # or: go build -o porter ./cmd/server
    ```
 
-3. **Build Porter**:
-   ```bash
-   make build
-   # or
-   go build -o porter ./cmd/server
-   ```
+3. **Run tests**:
 
-4. **Run tests**:
    ```bash
    make test
-   # or
-   go test ./...
    ```
 
-### Development Workflow
+4. **Try a real query**:
 
-1. **Create a feature branch**:
    ```bash
-   git checkout -b feature/your-feature-name
+   ./porter query "SELECT 42 as answer"
    ```
 
-2. **Make your changes**:
-   - Follow the coding standards below
-   - Add tests for new functionality
-   - Update documentation as needed
+If that worked, you're good to go.
 
-3. **Test your changes**:
+---
+
+## Making Changes
+
+1. **Create a branch**:
+
+   ```bash
+   git checkout -b feature/my-thing
+   ```
+
+2. **Build, test, commit**:
+
    ```bash
    make test
-   make build
-   ./porter --help  # Test CLI
+   git commit -m "feat: add my thing"
    ```
 
-4. **Commit your changes**:
-   ```bash
-   git add .
-   git commit -m "feat: add your feature description"
-   ```
+3. **Push and open a pull request**.
 
-5. **Push and create a PR**:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
+No one will yell at you for imperfect commits or open questions. That’s what reviews are for.
 
-## Coding Standards
+---
 
-### Go Code Style
+## Code Style
 
-- Follow [Effective Go](https://golang.org/doc/effective_go.html)
-- Use `gofmt` for code formatting
-- Follow the project's existing patterns and conventions
-- Use meaningful variable and function names
-- Add comments for complex logic
+* Use `gofmt`, `go vet`, and your best judgment.
+* Write code you’d want to inherit.
+* Add comments where future-you might say “wtf is this?”
+* Structure code like it matters. It does.
 
-### Project Structure
+---
 
-```
-porter/
-├── cmd/server/          # Main application entry point
-├── pkg/                 # Core packages
-│   ├── benchmark/       # Benchmarking functionality
-│   ├── cache/          # Caching layer
-│   ├── handlers/       # Request handlers
-│   ├── infrastructure/ # Infrastructure components
-│   ├── models/         # Data models
-│   ├── repositories/   # Data access layer
-│   ├── services/       # Business logic
-│   └── streaming/      # Streaming functionality
-├── config/             # Configuration files
-├── docs/               # Documentation
-├── examples/           # Example code and scripts
-└── test/               # Integration tests
-```
+## Pull Request Checklist
 
-### Code Organization
+Before submitting:
 
-- **Packages**: Group related functionality in packages
-- **Interfaces**: Define interfaces for testability and flexibility
-- **Error Handling**: Use structured error handling with error codes
-- **Logging**: Use structured logging with appropriate levels
-- **Testing**: Write unit tests for all new functionality
+* [ ] Tests pass
+* [ ] Docs are updated (if needed)
+* [ ] You’ve explained **why** the change matters
+* [ ] You’ve had at least one moment of joy while working on it
 
-### Testing Guidelines
+If you’re not sure whether it’s “good enough,” open it anyway. We’ll figure it out together.
 
-- **Unit Tests**: Test individual functions and methods
-- **Integration Tests**: Test component interactions
-- **Benchmark Tests**: Use the built-in benchmarking for performance-critical code
-- **Test Coverage**: Aim for high test coverage, especially for new features
-
-Example test structure:
-```go
-func TestMyFunction(t *testing.T) {
-    tests := []struct {
-        name     string
-        input    string
-        expected string
-    }{
-        {"normal case", "input", "expected"},
-        {"edge case", "", ""},
-    }
-    
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            result := MyFunction(tt.input)
-            assert.Equal(t, tt.expected, result)
-        })
-    }
-}
-```
+---
 
 ## Benchmarking Contributions
 
-### Adding New TPC-H Queries
+If you're working on `porter bench`, great! It's one of the most fun parts of the codebase. Check out `pkg/benchmark/` and follow the patterns there.
 
-To add new TPC-H queries to the benchmarking suite:
+You can:
 
-1. **Add the query** to `pkg/benchmark/tpch.go`:
-   ```go
-   "q11": `
-       SELECT
-           ps_partkey,
-           sum(ps_supplycost * ps_availqty) as value
-       FROM partsupp, supplier, nation
-       WHERE ps_suppkey = s_suppkey
-           AND s_nationkey = n_nationkey
-           AND n_name = 'GERMANY'
-       GROUP BY ps_partkey
-       HAVING sum(ps_supplycost * ps_availqty) > (
-           SELECT sum(ps_supplycost * ps_availqty) * 0.0001
-           FROM partsupp, supplier, nation
-           WHERE ps_suppkey = s_suppkey
-               AND s_nationkey = n_nationkey
-               AND n_name = 'GERMANY'
-       )
-       ORDER BY value desc`,
-   ```
+* Add new TPC-H queries
+* Build new suites (e.g. TPC-DS)
+* Improve output formatting (`--json`, `--arrow`, etc.)
 
-2. **Update the query list** in `GetAllQueries()`:
-   ```go
-   func GetAllQueries() []string {
-       return []string{"q1", "q2", "q3", "q4", "q5", "q6", "q7", "q8", "q9", "q10", "q11"}
-   }
-   ```
+Let us know if you're stuck—we’ll help.
 
-3. **Test the new query**:
-   ```bash
-   ./porter bench --query q11 --scale 0.01
-   ```
+---
 
-### Adding New Benchmark Suites
+## New Here? Start Here.
 
-To add support for other benchmark suites (e.g., TPC-DS):
+Look for issues tagged `good first issue` or `help wanted`. Or open a new one with your idea.
 
-1. **Create a new package** `pkg/benchmark/tpcds.go`
-2. **Implement the benchmark interface**:
-   ```go
-   type TPCDSRunner struct {
-       // Implementation
-   }
-   
-   func (r *TPCDSRunner) Run(ctx context.Context, config BenchmarkConfig) (*BenchmarkResult, error) {
-       // Implementation
-   }
-   ```
+You can also:
 
-3. **Add CLI support** in `cmd/server/main.go`
-4. **Update documentation** in `docs/benchmarking.md`
+* Fix typos in docs
+* Add backend support
+* Refactor little things
+* Improve error messages or CLI UX
 
-### Benchmark Testing
+We welcome contributions of **any size**. Really.
 
-When contributing to benchmarking features:
+---
 
-1. **Test with multiple scale factors**:
-   ```bash
-   ./porter bench --query q1 --scale 0.01
-   ./porter bench --query q1 --scale 0.1
-   ./porter bench --query q1 --scale 1
-   ```
+## Philosophy
 
-2. **Test all output formats**:
-   ```bash
-   ./porter bench --query q1 --format table
-   ./porter bench --query q1 --format json
-   ./porter bench --query q1 --format arrow
-   ```
+Porter doesn’t try to be a platform.
+It tries to do one thing well: serve SQL queries—fast, secure, and without drama.
 
-3. **Test error conditions**:
-   - Invalid query names
-   - Invalid scale factors
-   - Timeout conditions
-   - Database connection issues
+If you’re aligned with that, you’re already part of the project.
 
-## Pull Request Guidelines
+---
 
-### Before Submitting
+## Final Note
 
-1. **Ensure tests pass**:
-   ```bash
-   make test
-   make build
-   ```
+Thanks for considering a contribution. Porter exists because people like you care about software that’s fast, clear, and quiet. Your effort—however small—makes it better.
 
-2. **Run benchmarks** (if applicable):
-   ```bash
-   ./porter bench --all --scale 0.01
-   ```
-
-3. **Update documentation**:
-   - README.md for user-facing changes
-   - docs/ for detailed documentation
-   - Code comments for complex logic
-
-4. **Check formatting**:
-   ```bash
-   go fmt ./...
-   go vet ./...
-   ```
-
-### PR Description Template
-
-```markdown
-## Description
-Brief description of the changes
-
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
-
-## Testing
-- [ ] Unit tests added/updated
-- [ ] Integration tests added/updated
-- [ ] Manual testing completed
-- [ ] Benchmarks run (if applicable)
-
-## Checklist
-- [ ] Code follows project style guidelines
-- [ ] Self-review completed
-- [ ] Documentation updated
-- [ ] Tests added/updated
-- [ ] No breaking changes (or breaking changes documented)
-```
-
-### Review Process
-
-1. **Automated Checks**: CI/CD pipeline runs tests and checks
-2. **Code Review**: At least one maintainer reviews the PR
-3. **Testing**: Changes are tested in various environments
-4. **Documentation**: Documentation is reviewed and updated
-5. **Merge**: PR is merged after approval
-
-## Release Process
-
-### Versioning
-
-Porter follows [Semantic Versioning](https://semver.org/):
-- **Major**: Breaking changes
-- **Minor**: New features (backward compatible)
-- **Patch**: Bug fixes (backward compatible)
-
-### Release Checklist
-
-- [ ] All tests passing
-- [ ] Documentation updated
-- [ ] Benchmarks run and documented
-- [ ] CHANGELOG updated
-- [ ] Version tags created
-- [ ] Release notes written
-
-## Getting Help
-
-### Questions and Discussions
-
-- **GitHub Discussions**: For questions, ideas, and general discussion
-- **Issues**: For bug reports and feature requests
-- **Pull Requests**: For code contributions
-
-### Mentorship
-
-New contributors are welcome! If you're new to the project:
-
-1. **Start small**: Look for issues labeled "good first issue"
-2. **Ask questions**: Don't hesitate to ask for clarification
-3. **Join discussions**: Participate in community discussions
-4. **Be patient**: Learning takes time, and that's okay
-
-### Resources
-
-- [Go Documentation](https://golang.org/doc/)
-- [Apache Arrow Documentation](https://arrow.apache.org/docs/)
-- [Flight SQL Specification](https://arrow.apache.org/docs/format/FlightSql.html)
-- [DuckDB Documentation](https://duckdb.org/docs/)
-
-## Recognition
-
-Contributors are recognized in several ways:
-
-- **Contributors list**: GitHub automatically tracks contributions
-- **Release notes**: Significant contributions are mentioned
-- **Documentation**: Contributors are credited in relevant docs
-- **Community**: Active contributors are invited to join maintainer discussions
-
-Thank you for contributing to Porter! Your contributions help make analytics faster, simpler, and more accessible to everyone. 
+> Now go make something weird.
+> If it breaks, we’ll fix it together.
