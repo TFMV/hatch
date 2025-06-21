@@ -30,6 +30,8 @@ type QueryRepository interface {
 	ExecuteQuery(ctx context.Context, query string, txn Transaction, args ...interface{}) (*models.QueryResult, error)
 	// ExecuteUpdate executes an update statement and returns affected rows.
 	ExecuteUpdate(ctx context.Context, query string, txn Transaction, args ...interface{}) (*models.UpdateResult, error)
+	// Explain returns a query execution plan without running the query.
+	Explain(ctx context.Context, query string, txn Transaction) (*models.ExplainResult, error)
 	// Prepare prepares a statement for later execution.
 	Prepare(ctx context.Context, query string, txn Transaction) (*sql.Stmt, error)
 }

@@ -111,6 +111,21 @@ func (r *queryRepository) ExecuteUpdate(
 	return ur, err
 }
 
+// Explain returns an execution plan for the given query if supported.
+func (r *queryRepository) Explain(
+	ctx context.Context,
+	query string,
+	txn repositories.Transaction,
+) (*models.ExplainResult, error) {
+	r.log.Debug().
+		Str("sql", truncate(query, 120)).
+		Bool("in_tx", txn != nil).
+		Msg("explain")
+
+	// ClickHouse EXPLAIN support varies; return unimplemented for now.
+	return nil, errors.ErrNotImplemented
+}
+
 func (r *queryRepository) Prepare(
 	ctx context.Context,
 	query string,

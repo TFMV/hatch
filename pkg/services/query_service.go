@@ -181,6 +181,19 @@ func (s *queryService) ExecuteUpdate(ctx context.Context, req *models.UpdateRequ
 	return result, nil
 }
 
+// ExplainQuery returns a query plan without executing the query.
+func (s *queryService) ExplainQuery(ctx context.Context, query string) (*models.ExplainResult, error) {
+	if err := s.ValidateQuery(ctx, query); err != nil {
+		return nil, err
+	}
+
+	res, err := s.repo.Explain(ctx, query, nil)
+	if err != nil {
+		return nil, s.wrapQueryError(err)
+	}
+	return res, nil
+}
+
 // ValidateQuery validates a SQL query without executing it.
 func (s *queryService) ValidateQuery(ctx context.Context, query string) error {
 	// Basic validation
