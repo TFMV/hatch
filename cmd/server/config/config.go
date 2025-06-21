@@ -11,6 +11,7 @@ type Config struct {
 	// Server settings
 	Address           string        `yaml:"address" json:"address"`
 	Database          string        `yaml:"database" json:"database"`
+	Token             string        `yaml:"token" json:"token"`
 	LogLevel          string        `yaml:"log_level" json:"log_level"`
 	MaxConnections    int           `yaml:"max_connections" json:"max_connections"`
 	ConnectionTimeout time.Duration `yaml:"connection_timeout" json:"connection_timeout"`
@@ -279,6 +280,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Address:           "0.0.0.0:8815",
 		Database:          ":memory:",
+		Token:             "",
 		LogLevel:          "info",
 		MaxConnections:    100,
 		ConnectionTimeout: 30 * time.Second,

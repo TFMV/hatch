@@ -183,7 +183,12 @@ Porter provides a unified Flight SQL interface across multiple database backends
 - **Use Cases**: Development, analytics workloads, embedded applications
 - **Performance**: Excellent for OLAP queries, TPC-H benchmarks
 
-### ClickHouse Backend  
+### MotherDuck Backend
+- **Connection String**: `duckdb://motherduck/<db>`
+- **Token Source**: `--token` flag or `MOTHERDUCK_TOKEN` environment variable
+- **Features**: Hosted DuckDB with cloud execution
+
+### ClickHouse Backend
 - **Connection String**: `clickhouse://host:port/database?username=user&password=pass`
 - **Features**: Distributed analytics, real-time ingestion, horizontal scaling
 - **Use Cases**: Large-scale analytics, time-series data, real-time dashboards
@@ -196,8 +201,11 @@ The backend is automatically detected from the DSN connection string:
 database:
   # DuckDB (embedded)
   dsn: "duckdb://./analytics.db"
-  
-  # ClickHouse (distributed)  
+
+  # MotherDuck (cloud)
+  dsn: "duckdb://motherduck/my_db"
+
+  # ClickHouse (distributed)
   dsn: "clickhouse://localhost:9000/analytics?username=default"
 ```
 
@@ -424,6 +432,7 @@ export PORTER_DATABASE=":memory:"
 export PORTER_LOG_LEVEL="debug"
 export PORTER_METRICS_ENABLED="true"
 export PORTER_MAX_CONNECTIONS="100"
+export MOTHERDUCK_TOKEN=your_token
 ```
 
 ### Command Line Options

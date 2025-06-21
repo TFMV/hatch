@@ -93,6 +93,7 @@ func init() {
 	serveCmd.Flags().StringP("config", "c", "", "config file path")
 	serveCmd.Flags().String("address", "0.0.0.0:32010", "server listen address")
 	serveCmd.Flags().String("database", ":memory:", "DuckDB database path")
+	serveCmd.Flags().String("token", "", "MotherDuck auth token")
 	serveCmd.Flags().String("log-level", "info", "log level (debug, info, warn, error)")
 	serveCmd.Flags().Bool("tls", false, "enable TLS")
 	serveCmd.Flags().String("tls-cert", "", "TLS certificate file")
@@ -126,6 +127,7 @@ func init() {
 	}
 	viper.SetEnvPrefix("PORTER")
 	viper.AutomaticEnv()
+	_ = viper.BindEnv("token", "MOTHERDUCK_TOKEN")
 
 	// Add version command
 	rootCmd.AddCommand(&cobra.Command{
@@ -279,8 +281,10 @@ func createEnterpriseServer(cfg *config.Config, logger zerolog.Logger, metricsCo
 	allocator := memory.NewGoAllocator()
 
 	// Create connection pool configuration
+	dsn := infrastructure.NormalizeMotherDuckDSN(cfg.Database)
+	dsn = infrastructure.InjectMotherDuckToken(dsn, cfg.Token)
 	poolCfg := pool.Config{
-		DSN:                cfg.Database,
+		DSN:                dsn,
 		MaxOpenConnections: cfg.MaxConnections,
 		MaxIdleConnections: cfg.MaxConnections / 2,
 		ConnMaxLifetime:    cfg.ConnectionTimeout,
@@ -451,6 +455,7 @@ func loadConfig(cmd *cobra.Command) (*config.Config, error) {
 	cfg := &config.Config{
 		Address:           viper.GetString("address"),
 		Database:          viper.GetString("database"),
+		Token:             viper.GetString("token"),
 		LogLevel:          viper.GetString("log-level"),
 		MaxConnections:    viper.GetInt("max-connections"),
 		ConnectionTimeout: viper.GetDuration("connection-timeout"),
