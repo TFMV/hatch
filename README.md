@@ -1,6 +1,12 @@
-# Porter
-
-*Zero‑copy analytics, delivered at Mach Arrow.*
+<div align="center">
+  <img src="assets/porter-logo.svg" alt="Porter Logo" width="150" height="150">
+  
+  # Porter
+  
+  *Zero‑copy analytics, delivered at Mach Arrow.*
+  
+  *In honor of Barbara Porter* 🐱
+</div>
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/TFMV/porter)](https://goreportcard.com/report/github.com/TFMV/porter)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
