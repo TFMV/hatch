@@ -103,15 +103,16 @@ type JWTAuthConfig struct {
 
 // OAuth2Config represents OAuth2 authentication configuration.
 type OAuth2Config struct {
-	ClientID          string        `yaml:"client_id" json:"client_id"`
-	ClientSecret      string        `yaml:"client_secret" json:"client_secret"`
-	AuthorizeEndpoint string        `yaml:"authorize_endpoint" json:"authorize_endpoint"`
-	TokenEndpoint     string        `yaml:"token_endpoint" json:"token_endpoint"`
-	RedirectURL       string        `yaml:"redirect_url" json:"redirect_url"`
-	Scopes            []string      `yaml:"scopes" json:"scopes"`
-	AccessTokenTTL    time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
-	RefreshTokenTTL   time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
-	AllowedGrantTypes []string      `yaml:"allowed_grant_types" json:"allowed_grant_types"`
+	ClientID            string        `yaml:"client_id" json:"client_id"`
+	ClientSecret        string        `yaml:"client_secret" json:"client_secret"`
+	AuthorizeEndpoint   string        `yaml:"authorize_endpoint" json:"authorize_endpoint"`
+	TokenEndpoint       string        `yaml:"token_endpoint" json:"token_endpoint"`
+	RedirectURL         string        `yaml:"redirect_url" json:"redirect_url"`
+	AllowedRedirectURIs []string      `yaml:"allowed_redirect_uris" json:"allowed_redirect_uris"`
+	Scopes              []string      `yaml:"scopes" json:"scopes"`
+	AccessTokenTTL      time.Duration `yaml:"access_token_ttl" json:"access_token_ttl"`
+	RefreshTokenTTL     time.Duration `yaml:"refresh_token_ttl" json:"refresh_token_ttl"`
+	AllowedGrantTypes   []string      `yaml:"allowed_grant_types" json:"allowed_grant_types"`
 }
 
 // MetricsConfig represents metrics configuration.
@@ -215,6 +216,9 @@ func (c *Config) Validate() error {
 			}
 			if c.Auth.OAuth2Auth.AuthorizeEndpoint == "" || c.Auth.OAuth2Auth.TokenEndpoint == "" {
 				return fmt.Errorf("OAuth2 auth requires authorize and token endpoints")
+			}
+			if len(c.Auth.OAuth2Auth.AllowedRedirectURIs) == 0 {
+				return fmt.Errorf("OAuth2 auth requires at least one allowed redirect URI for security")
 			}
 			if c.Auth.OAuth2Auth.AccessTokenTTL <= 0 {
 				c.Auth.OAuth2Auth.AccessTokenTTL = 1 * time.Hour

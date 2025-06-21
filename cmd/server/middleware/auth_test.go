@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"io"
 	"testing"
 	"time"
 
@@ -356,6 +357,92 @@ func TestAuthMiddleware_AuthenticateJWT(t *testing.T) {
 		assert.Error(t, err)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 	})
+}
+
+func TestAuthMiddleware_ValidateRedirectURI(t *testing.T) {
+	tests := []struct {
+		name          string
+		allowedURIs   []string
+		redirectURI   string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:        "valid redirect URI",
+			allowedURIs: []string{"http://localhost:8080/callback", "https://myapp.com/oauth/callback"},
+			redirectURI: "http://localhost:8080/callback",
+			expectError: false,
+		},
+		{
+			name:        "valid redirect URI with https",
+			allowedURIs: []string{"http://localhost:8080/callback", "https://myapp.com/oauth/callback"},
+			redirectURI: "https://myapp.com/oauth/callback",
+			expectError: false,
+		},
+		{
+			name:          "empty redirect URI",
+			allowedURIs:   []string{"http://localhost:8080/callback"},
+			redirectURI:   "",
+			expectError:   true,
+			errorContains: "redirect URI is required",
+		},
+		{
+			name:          "invalid URL format",
+			allowedURIs:   []string{"http://localhost:8080/callback"},
+			redirectURI:   "://missing-scheme.com/callback",
+			expectError:   true,
+			errorContains: "invalid redirect URI format",
+		},
+		{
+			name:          "malformed percent-encoding",
+			allowedURIs:   []string{"http://localhost:8080/callback"},
+			redirectURI:   "http://%41:8080/",
+			expectError:   true,
+			errorContains: "invalid redirect URI format",
+		},
+		{
+			name:          "unsupported scheme",
+			allowedURIs:   []string{"http://localhost:8080/callback"},
+			redirectURI:   "ftp://example.com/callback",
+			expectError:   true,
+			errorContains: "redirect URI must use http or https scheme",
+		},
+		{
+			name:          "redirect URI not in allowed list",
+			allowedURIs:   []string{"http://localhost:8080/callback"},
+			redirectURI:   "http://malicious.com/callback",
+			expectError:   true,
+			errorContains: "redirect URI not in allowed list",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.AuthConfig{
+				Enabled: true,
+				Type:    "oauth2",
+				OAuth2Auth: config.OAuth2Config{
+					ClientID:            "test-client",
+					ClientSecret:        "test-secret",
+					AllowedRedirectURIs: tt.allowedURIs,
+				},
+			}
+
+			logger := zerolog.New(io.Discard)
+			middleware := NewAuthMiddleware(cfg, logger)
+
+			err := middleware.validateRedirectURI(tt.redirectURI)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 func TestAuthMiddleware_UnaryInterceptor(t *testing.T) {

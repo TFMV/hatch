@@ -25,6 +25,9 @@ tracing:
       client_id: "your-client-id"
       client_secret: "your-client-secret"
       redirect_url: "localhost:8080" # OAuth2 HTTP server address
+      allowed_redirect_uris:
+        - "http://localhost:8080/callback"
+        - "https://myapp.com/oauth/callback"
       authorize_endpoint: "/oauth2/authorize"
       token_endpoint: "/oauth2/token"
       scopes: ["read", "write"]
