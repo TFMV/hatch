@@ -239,6 +239,31 @@ info = client.get_flight_info(
 table = client.do_get(info.endpoints[0].ticket).read_all()
 ```
 
+### Python (using Polars)
+```python
+import adbc_driver_flightsql.dbapi
+import pyarrow as pa
+import polars as pl
+
+# Connect and run a query
+conn = adbc_driver_flightsql.dbapi.connect("grpc://localhost:32010")
+cursor = conn.cursor()
+cursor.execute("SELECT 1 AS id, 'example' AS label")
+
+# Collect record batches and convert to Polars
+batches = []
+batch = cursor.fetch_record_batch()
+while batch is not None:
+    batches.append(batch)
+    batch = cursor.fetch_record_batch()
+
+arrow_table = pa.Table.from_batches(batches)
+df = pl.from_arrow(arrow_table)
+print(df)
+cursor.close()
+conn.close()
+```
+
 ### Java (using Arrow Flight SQL JDBC)
 ```java
 String url = "jdbc:arrow-flight-sql://localhost:32010";
